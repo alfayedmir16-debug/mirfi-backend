@@ -385,13 +385,30 @@ export const unsendMessage = async (req: any, res: any) => {
 
     await prisma.message.delete({ where: { id: messageId } });
 
-    // Broadcast to both parties
+    // Broadcast to both parties via socket
     try {
       const io = req.app.get("io");
       if (io) {
         io.to(`user:${userId}`).emit("message_removed", { messageId });
         io.to(`user:${recipientId}`).emit("message_removed", { messageId });
       }
+    } catch (_) {}
+
+    // Send silent notification to dismiss the original notification from device
+    try {
+      const { sendPushNotification } = await import("../utils/pushNotifications");
+      sendPushNotification(recipientId, '', '', {
+        type: 'cancel_notification',
+        messageId,
+        silent: true,
+      });
+    } catch (_) {}
+
+    // Also delete the notification record from DB
+    try {
+      await prisma.notification.deleteMany({
+        where: { senderId: userId, userId: recipientId, type: 'message' },
+      });
     } catch (_) {}
 
     res.json({ success: true });

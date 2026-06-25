@@ -1,0 +1,16 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const auth_1 = require("../middleware/auth");
+const storyController_1 = require("../controllers/storyController");
+const router = (0, express_1.Router)();
+router.post("/create", auth_1.authenticateJWT, storyController_1.createStory);
+router.get("/feed", auth_1.authenticateJWT, storyController_1.getStoryFeed);
+router.get("/user/:userId", auth_1.authenticateJWT, storyController_1.getUserStories);
+router.post("/:storyId/view", auth_1.authenticateJWT, storyController_1.viewStory);
+router.post("/:storyId/react", auth_1.authenticateJWT, storyController_1.reactToStory);
+router.post("/:storyId/comment", auth_1.authenticateJWT, storyController_1.commentOnStory);
+router.get("/:storyId/activity", auth_1.authenticateJWT, storyController_1.getStoryActivity);
+router.delete("/:storyId", auth_1.authenticateJWT, storyController_1.deleteStory);
+router.post("/:storyId/vote", auth_1.authenticateJWT, storyController_1.voteStoryPoll);
+exports.default = router;

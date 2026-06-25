@@ -1,0 +1,18 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const creatorController_1 = require("../controllers/creatorController");
+const growthController_1 = require("../controllers/growthController");
+const monetizationController_1 = require("../controllers/monetizationController");
+const auth_1 = require("../middleware/auth");
+const router = (0, express_1.Router)();
+router.post('/view/:postId', auth_1.authenticateJWT, creatorController_1.viewPost);
+router.post('/share', auth_1.authenticateJWT, creatorController_1.sharePost);
+router.get('/analytics', auth_1.authenticateJWT, creatorController_1.getCreatorAnalytics);
+router.get('/posts', auth_1.authenticateJWT, creatorController_1.getCreatorPosts);
+router.get('/performance', auth_1.authenticateJWT, creatorController_1.getQuickPerformance);
+router.get('/content', auth_1.authenticateJWT, creatorController_1.getCreatorContent);
+router.get('/growth', auth_1.authenticateJWT, growthController_1.getCreatorGrowth);
+router.get('/monetization', auth_1.authenticateJWT, monetizationController_1.getCreatorMonetization);
+router.get('/achievements', auth_1.authenticateJWT, creatorController_1.getAchievements);
+exports.default = router;

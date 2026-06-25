@@ -1,0 +1,22 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const postController_1 = require("../controllers/postController");
+const auth_1 = require("../middleware/auth");
+const router = (0, express_1.Router)();
+router.post('/create', auth_1.authenticateJWT, postController_1.createPost);
+router.get('/feed', auth_1.authenticateJWT, postController_1.getFeed);
+router.get('/reels', auth_1.authenticateJWT, postController_1.getReels);
+router.post('/like', auth_1.authenticateJWT, postController_1.toggleLike);
+router.get('/user/:userId', auth_1.authenticateJWT, postController_1.getUserPosts);
+router.get('/post/:postId', auth_1.authenticateJWT, postController_1.getPostById);
+router.post('/save', auth_1.authenticateJWT, postController_1.toggleSave);
+router.get('/saved', auth_1.authenticateJWT, postController_1.getSavedPosts);
+router.get('/search', auth_1.authenticateJWT, postController_1.getFeed); // Use getFeed with query params for search
+router.post('/comment', auth_1.authenticateJWT, postController_1.addComment);
+router.get('/:postId/comments', auth_1.authenticateJWT, postController_1.getComments);
+router.put('/settings', auth_1.authenticateJWT, postController_1.updatePostSettings);
+router.delete('/:postId', auth_1.authenticateJWT, postController_1.deletePost);
+router.get('/collab/invites', auth_1.authenticateJWT, postController_1.getPendingCollabInvites);
+router.post('/collab/:postId/respond', auth_1.authenticateJWT, postController_1.respondCollab);
+exports.default = router;

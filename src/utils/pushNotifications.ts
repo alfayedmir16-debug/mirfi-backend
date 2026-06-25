@@ -39,7 +39,7 @@ export async function sendPushNotification(userId: string, title: string, body: 
       return;
     }
 
-    // Determine grouping key — messages from same sender collapse into one
+    // Determine grouping — same sender's messages stack together
     const senderId = data?.senderId || 'general';
 
     // For message notifications, fetch recent unread messages to show stacked
@@ -67,7 +67,7 @@ export async function sendPushNotification(userId: string, title: string, body: 
       } catch {}
     }
 
-    // Get sender's profile picture for notification
+    // Get sender's profile picture
     let senderAvatar: string | undefined;
     if (senderId && senderId !== 'general') {
       try {
@@ -86,16 +86,15 @@ export async function sendPushNotification(userId: string, title: string, body: 
       sound: 'default',
       title,
       body: stackedBody,
-      data: { ...data },
+      data: {
+        ...data,
+        // Tell client to dismiss previous notification from same sender
+        collapseId: data?.type === 'message' ? `chat_${senderId}` : undefined,
+        senderAvatar,
+      },
       channelId: data?.type === 'message' ? 'messages' : 'default',
       priority: 'high',
     };
-
-    // Collapse notifications from same sender (replace previous)
-    // Using a fixed notification ID per sender — new notification replaces old one
-    if (data?.type === 'message' && senderId) {
-      (message as any)._id = `chat_${senderId}`; // Same ID = replaces previous
-    }
 
     const [ticket] = await expo.sendPushNotificationsAsync([message]);
     if (ticket.status === 'error') {

@@ -39,15 +39,13 @@ export async function sendPushNotification(userId: string, title: string, body: 
       return;
     }
 
-    // Determine grouping key — messages from same sender group together
+    // Determine grouping key — messages from same sender collapse into one
     const senderId = data?.senderId || 'general';
-    const threadId = `mirfi-chat-${senderId}`; // Same sender = same thread
 
-    // For message notifications, fetch recent messages to show stacked
+    // For message notifications, fetch recent unread messages to show stacked
     let stackedBody = body;
     if (data?.type === 'message' && senderId) {
       try {
-        // Get recent unread messages from this sender to stack them
         const recentMsgs = await prisma.message.findMany({
           where: {
             senderId,
@@ -60,12 +58,25 @@ export async function sendPushNotification(userId: string, title: string, body: 
         });
 
         if (recentMsgs.length > 1) {
-          // Stack messages like Instagram: show last few messages
           const lines = recentMsgs
             .reverse()
             .map(m => m.type === 'image' ? '📷 Photo' : m.type === 'audio' ? '🎤 Voice' : m.text || '💬')
-            .slice(-4); // Max 4 lines
+            .slice(-4);
           stackedBody = lines.join('\n');
+        }
+      } catch {}
+    }
+
+    // Get sender's profile picture for notification
+    let senderAvatar: string | undefined;
+    if (senderId && senderId !== 'general') {
+      try {
+        const sender = await prisma.user.findUnique({
+          where: { id: senderId },
+          select: { profilePicture: true },
+        });
+        if (sender?.profilePicture && !sender.profilePicture.includes('placeholder')) {
+          senderAvatar = sender.profilePicture;
         }
       } catch {}
     }
@@ -75,20 +86,16 @@ export async function sendPushNotification(userId: string, title: string, body: 
       sound: 'default',
       title,
       body: stackedBody,
-      data: { ...data, threadId },
-      channelId: 'messages', // Android notification channel
+      data: { ...data },
+      channelId: data?.type === 'message' ? 'messages' : 'default',
       priority: 'high',
-      // iOS threading — groups notifications from same sender
-      _displayInForeground: true,
-    } as any;
-
-    // Add collapse key for Android — same sender notifications replace each other
-    (message as any).android = {
-      channelId: 'messages',
-      notification: {
-        tag: threadId, // Same tag = notifications collapse into one
-      },
     };
+
+    // Collapse notifications from same sender (replace previous)
+    // Using a fixed notification ID per sender — new notification replaces old one
+    if (data?.type === 'message' && senderId) {
+      (message as any)._id = `chat_${senderId}`; // Same ID = replaces previous
+    }
 
     const [ticket] = await expo.sendPushNotificationsAsync([message]);
     if (ticket.status === 'error') {

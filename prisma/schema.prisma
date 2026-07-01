@@ -469,3 +469,23 @@ model SupportTicket {
   images      String[]
   createdAt   DateTime @default(now())
 }
+
+
+// ── Creator Monetization Applications ──
+model MonetizationApplication {
+  id             String   @id @default(uuid())
+  userId         String
+  fullName       String
+  email          String
+  phone          String?
+  contentType    String   // "reels" | "posts" | "both"
+  niche          String?  // "gaming" | "tech" | "music" | "lifestyle" etc.
+  followers      Int
+  views30d       Int
+  paymentMethod  String?  // "upi" | "bank" | "paypal"
+  paymentDetails String?  // UPI ID or bank details
+  status         String   @default("pending") // "pending" | "approved" | "rejected"
+  adminNotes     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}

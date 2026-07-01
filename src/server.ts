@@ -12,7 +12,9 @@ import callRoutes from './routes/callRoutes';
 import creatorRoutes from './routes/creatorRoutes';
 import e2eeRoutes from './routes/e2eeRoutes';
 import groupRoutes from './routes/groupRoutes';
+import highlightRoutes from './routes/highlightRoutes';
 import messageRoutes from './routes/messageRoutes';
+import monetizeRoutes from './routes/monetizeRoutes';
 import noteRoutes from './routes/noteRoutes';
 import postRoutes from './routes/postRoutes';
 import storageRoutes from './routes/storageRoutes';
@@ -28,7 +30,7 @@ const PORT = process.env.PORT || 5000;
 
 // Socket.IO
 const io = new SocketIOServer(server, {
-  cors: { origin: '*' },
+  cors: { origin: process.env.NODE_ENV === 'production' ? ['https://mirfi.app'] : '*' },
   path: '/ws',
 });
 setupSocket(io);
@@ -50,6 +52,8 @@ app.use('/api/stories', storyRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/notes', noteRoutes);
 app.use('/api/groups', groupRoutes);
+app.use('/api/highlights', highlightRoutes);
+app.use('/api/monetize', monetizeRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/calls', callRoutes);
 app.use('/api/e2ee', e2eeRoutes);

@@ -4,18 +4,10 @@ import { authenticateJWT } from '../middleware/auth';
 
 const router = Router();
 
-// Creator submits monetization application (from website)
+// Creator submits monetization application (from app)
 router.post('/apply', authenticateJWT as any, async (req: any, res: any) => {
   try {
     const userId = req.user.id;
-
-    // Security: Check origin header — only allow from app (in-app browser sends referer)
-    const origin = req.headers.origin || req.headers.referer || '';
-    const appSecret = req.headers['x-app-secret'];
-    if (appSecret !== 'mirfi_app_only_2026') {
-      return res.status(403).json({ error: 'Access denied. Apply from MirFi app only.' });
-    }
-
     const { fullName, email, phone, contentType, niche, paymentMethod, paymentDetails } = req.body;
 
     if (!fullName || !email || !contentType) {

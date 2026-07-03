@@ -11,7 +11,7 @@ export const viewPost = async (req: AuthRequest, res: Response) => {
 
   const postId = req.params.postId as string;
   const userId = req.user.id;
-  const { device, country, source } = req.body || {};
+  const { device, source } = req.body || {};
 
   try {
     // Fetch viewer's gender from profile
@@ -21,6 +21,19 @@ export const viewPost = async (req: AuthRequest, res: Response) => {
     });
 
     const viewerGender = viewer?.gender || null;
+
+    // Get country from IP address
+    let country: string | null = null;
+    try {
+      const ip = req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || req.socket.remoteAddress || '';
+      if (ip && ip !== '::1' && ip !== '127.0.0.1') {
+        const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country`);
+        if (geoRes.ok) {
+          const geo = await geoRes.json();
+          country = geo.country || null;
+        }
+      }
+    } catch {}
 
     // Check if already viewed by this user in last 24h
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -35,7 +48,7 @@ export const viewPost = async (req: AuthRequest, res: Response) => {
             postId,
             userId,
             gender: viewerGender,
-            country: country || null,
+            country,
             device: device || null,
             source: source || null,
           } as any,

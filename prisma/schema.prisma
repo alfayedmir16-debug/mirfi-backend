@@ -489,3 +489,15 @@ model MonetizationApplication {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
+
+
+// Admin-specific model for admin users (shared with Admin panel)
+model AdminUser {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         String   @default("admin")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}

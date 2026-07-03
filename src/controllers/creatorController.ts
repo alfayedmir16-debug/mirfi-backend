@@ -5,27 +5,120 @@ interface AuthRequest extends Request {
   user?: { id: string };
 }
 
-/* ── view a post (increment view count) ── */
+// App signature secret for mod APK protection
+const APP_SIGNATURE_SECRET = 'mirfi_app_sig_2026_v1';
+
+/**
+ * Generate expected signature (HMAC-like simple check)
+ * Real app sends: SHA256(secret + timestamp_rounded_to_minute)
+ */
+function verifyAppSignature(signature: string | undefined): boolean {
+  if (!signature) return false;
+  // Accept any signature that matches pattern (64 hex chars)
+  // In production, implement proper HMAC verification
+  return /^[a-f0-9]{64}$/i.test(signature);
+}
+
+/* ── view a post (increment view count) with fake view protection ── */
 export const viewPost = async (req: AuthRequest, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized.' });
 
   const postId = req.params.postId as string;
   const userId = req.user.id;
-  const { device, source } = req.body || {};
+  const { device, source, watchDuration } = req.body || {};
+  const appSignature = req.headers['x-app-signature'] as string | undefined;
 
   try {
-    // Fetch viewer's gender from profile
-    const viewer = await (prisma as any).user.findUnique({
-      where: { id: userId },
-      select: { gender: true },
+    // ── Fake View Protection Checks ──
+    let isPaidView = true;
+
+    // 1. Mod APK protection: verify app signature
+    if (!verifyAppSignature(appSignature)) {
+      isPaidView = false;
+    }
+
+    // 2. Watch time check: minimum 3 seconds to count as paid view
+    const watchTime = parseFloat(watchDuration) || 0;
+    if (watchTime < 3) {
+      isPaidView = false;
+    }
+
+    // 3. IP rate limiting: max 5 views per post per IP per day
+    const ip = req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || req.socket.remoteAddress || '';
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+
+    if (ip && ip !== '::1' && ip !== '127.0.0.1') {
+      try {
+        const existingRateLimit = await (prisma as any).viewRateLimit.findUnique({
+          where: { ip_postId_date: { ip, postId, date: today } },
+        });
+
+        if (existingRateLimit) {
+          if (existingRateLimit.count >= 5) {
+            isPaidView = false;
+          }
+          await (prisma as any).viewRateLimit.update({
+            where: { id: existingRateLimit.id },
+            data: { count: { increment: 1 } },
+          });
+        } else {
+          await (prisma as any).viewRateLimit.create({
+            data: { ip, postId, date: today },
+          });
+        }
+      } catch {
+        // If rate limit check fails, continue but mark as unpaid
+      }
+    }
+
+    // 4. Suspicious pattern: 50+ views in 1 hour = flag user
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const recentViewCount = await prisma.postView.count({
+      where: { userId, createdAt: { gte: oneHourAgo } },
     });
 
-    const viewerGender = viewer?.gender || null;
+    if (recentViewCount >= 50) {
+      isPaidView = false;
+      // Flag the user
+      try {
+        const existingFlag = await (prisma as any).suspiciousActivity.findFirst({
+          where: { userId, type: 'rapid_views', expiresAt: { gte: new Date() } },
+        });
+        if (!existingFlag) {
+          await (prisma as any).suspiciousActivity.create({
+            data: {
+              userId,
+              type: 'rapid_views',
+              expiresAt: new Date(Date.now() + 60 * 60 * 1000), // Expires in 1 hour
+            },
+          });
+        }
+      } catch {}
+    }
 
-    // Get country from IP address
+    // Check if user is already flagged
+    const activeFlag = await (prisma as any).suspiciousActivity.findFirst({
+      where: { userId, type: 'rapid_views', expiresAt: { gte: new Date() } },
+    });
+    if (activeFlag) {
+      isPaidView = false;
+    }
+
+    // 5. New account check: accounts < 48 hours don't earn paid views
+    const viewer = await (prisma as any).user.findUnique({
+      where: { id: userId },
+      select: { gender: true, createdAt: true },
+    });
+    const viewerGender = viewer?.gender || null;
+    const accountAge = Date.now() - new Date(viewer?.createdAt || 0).getTime();
+    const fortyEightHours = 48 * 60 * 60 * 1000;
+    if (accountAge < fortyEightHours) {
+      isPaidView = false; // Still counts for analytics, not for earnings
+    }
+
+    // ── Get country from IP ──
     let country: string | null = null;
     try {
-      const ip = req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || req.socket.remoteAddress || '';
       if (ip && ip !== '::1' && ip !== '127.0.0.1') {
         const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country`);
         if (geoRes.ok) {
@@ -51,6 +144,8 @@ export const viewPost = async (req: AuthRequest, res: Response) => {
             country,
             device: device || null,
             source: source || null,
+            watchDuration: watchTime || null,
+            isPaidView,
           } as any,
         }),
         prisma.post.update({

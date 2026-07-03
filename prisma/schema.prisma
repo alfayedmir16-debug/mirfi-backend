@@ -101,16 +101,21 @@ model Post {
 }
 
 model PostView {
-  id        String   @id @default(uuid())
-  postId    String
-  userId    String?  // null for anonymous/non-logged views
-  gender    String?  // viewer's gender from their profile
-  country   String?  // viewer's country
-  device    String?  // "iPhone" | "Android" | "Web"
-  source    String?  // "home" | "explore" | "search" | "direct" | "profile"
-  createdAt DateTime @default(now())
+  id            String   @id @default(uuid())
+  postId        String
+  userId        String?  // null for anonymous/non-logged views
+  gender        String?  // viewer's gender from their profile
+  country       String?  // viewer's country
+  device        String?  // "iPhone" | "Android" | "Web"
+  source        String?  // "home" | "explore" | "search" | "direct" | "profile"
+  watchDuration Float?   // seconds the user watched
+  isPaidView    Boolean  @default(true) // false if flagged as fake/ineligible for earnings
+  createdAt     DateTime @default(now())
 
-  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  post          Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, createdAt])
+  @@index([userId, createdAt])
 }
 
 model Follow {
@@ -490,6 +495,43 @@ model MonetizationApplication {
   updatedAt      DateTime @updatedAt
 }
 
+
+// ── Withdrawal Requests (Creator Earnings Payouts) ──
+model WithdrawalRequest {
+  id             String   @id @default(uuid())
+  userId         String
+  amount         Float    // Amount in USD
+  status         String   @default("pending") // "pending" | "processing" | "completed" | "rejected"
+  paymentMethod  String   // "upi" | "bank" | "paypal"
+  paymentDetails String   // UPI ID, bank details JSON, or PayPal email
+  adminNotes     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// ── View Rate Limiting (Fake View Protection) ──
+model ViewRateLimit {
+  id        String   @id @default(uuid())
+  ip        String
+  postId    String
+  count     Int      @default(1)
+  date      String   // YYYY-MM-DD format for daily tracking
+  createdAt DateTime @default(now())
+
+  @@unique([ip, postId, date])
+  @@index([ip, date])
+}
+
+// ── Suspicious Activity Flags ──
+model SuspiciousActivity {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String   // "rapid_views" | "bot_pattern"
+  flaggedAt DateTime @default(now())
+  expiresAt DateTime // When the flag expires (1 hour for rapid views)
+
+  @@index([userId, type, expiresAt])
+}
 
 // Admin-specific model for admin users (shared with Admin panel)
 model AdminUser {

@@ -8,6 +8,7 @@ import {
     sharePost,
     viewPost
 } from '../controllers/creatorController';
+import { createWithdrawal, getCreatorEarnings } from '../controllers/earningsController';
 import { getCreatorGrowth } from '../controllers/growthController';
 import { getCreatorMonetization } from '../controllers/monetizationController';
 import { authenticateJWT } from '../middleware/auth';
@@ -23,5 +24,9 @@ router.get('/content', authenticateJWT as any, getCreatorContent as any);
 router.get('/growth', authenticateJWT as any, getCreatorGrowth as any);
 router.get('/monetization', authenticateJWT as any, getCreatorMonetization as any);
 router.get('/achievements', authenticateJWT as any, getAchievements as any);
+
+// Earnings & Withdrawal
+router.get('/earnings', authenticateJWT as any, getCreatorEarnings as any);
+router.post('/withdraw', authenticateJWT as any, createWithdrawal as any);
 
 export default router;

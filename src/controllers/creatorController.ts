@@ -29,7 +29,7 @@ export const viewPost = async (req: AuthRequest, res: Response) => {
       if (ip && ip !== '::1' && ip !== '127.0.0.1') {
         const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country`);
         if (geoRes.ok) {
-          const geo = await geoRes.json();
+          const geo: any = await geoRes.json();
           country = geo.country || null;
         }
       }

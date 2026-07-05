@@ -473,9 +473,9 @@ export const getCreatorContent = async (req: AuthRequest, res: Response) => {
   const userId = req.user.id;
 
   try {
-    // 1. All posts (reels) ordered by date
+    // 1. All posts (reels + images) ordered by date
     const posts = await prisma.post.findMany({
-      where: { userId, type: 'reel' },
+      where: { userId },
       orderBy: { createdAt: 'desc' },
       include: {
         _count: { select: { likes: true, comments: true, saves: true } },

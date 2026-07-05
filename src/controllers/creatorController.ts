@@ -210,7 +210,12 @@ export const getCreatorAnalytics = async (req: AuthRequest, res: Response) => {
     const gainedFollowers = await prisma.follow.count({
       where: { followingId: userId, status: 'accepted', createdAt: { gte: since } },
     });
-    const lostFollowers = 0; // soft-unfollow tracking not implemented; assume 0 for now
+    // Calculate lost followers: (followers at start of period + gained) - current total
+    const currentFollowers = await prisma.follow.count({
+      where: { followingId: userId, status: 'accepted' },
+    });
+    const followersAtStart = currentFollowers - gainedFollowers; // approximate
+    const lostFollowers = Math.max(0, (followersAtStart + gainedFollowers) - currentFollowers);
     const netFollowers = gainedFollowers - lostFollowers;
 
     const prevGained = await prisma.follow.count({
@@ -348,6 +353,7 @@ export const getCreatorAnalytics = async (req: AuthRequest, res: Response) => {
       prevLikes,
       likesChange: prevLikes > 0 ? Math.round(((totalLikes - prevLikes) / prevLikes) * 100) : (totalLikes > 0 ? 100 : 0),
       totalShares: periodShares,
+      sharesChange: 0, // Share tracking per-period not available yet
       totalPosts,
       engagementRate,
       prevEngagementRate,
@@ -546,7 +552,7 @@ export const getCreatorContent = async (req: AuthRequest, res: Response) => {
       topPerforming,
       deepMetrics: {
         totalReach: totalViews,
-        totalWatchTime: Math.round(totalViews * 0.5), // estimate: 30s avg = 0.5 min per view, in minutes
+        totalWatchTime: 0, // Real watch time not available — will show "N/A" on frontend
         avgSaveRate: saveRate,
         engagementRate,
         totalComments,

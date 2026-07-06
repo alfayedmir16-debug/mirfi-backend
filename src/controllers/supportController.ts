@@ -1,7 +1,6 @@
 import { Response } from 'express';
 import prisma from '../config/db';
 import { AuthRequest } from '../middleware/auth';
-import { sendSupportTicketEmail } from '../services/emailService';
 
 export const createSupportTicket = async (req: AuthRequest, res: Response) => {
   const { category, description, images } = req.body;
@@ -36,7 +35,7 @@ export const createSupportTicket = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // 2. Save ticket to database
+    // 2. Save ticket to database — visible in Admin Panel
     await (prisma as any).supportTicket.create({
       data: {
         userId: user.id,
@@ -45,16 +44,8 @@ export const createSupportTicket = async (req: AuthRequest, res: Response) => {
         images: images || []
       }
     });
-    
-    // 3. Send email notification
-    await sendSupportTicketEmail({
-      username: user.username,
-      email: user.email,
-      category,
-      description,
-      images: images || []
-    });
 
+    // No email — all tickets managed via Admin Panel
     res.status(200).json({ success: true, message: 'Support ticket sent successfully.' });
   } catch (error: any) {
     console.error('Support ticket error:', error);

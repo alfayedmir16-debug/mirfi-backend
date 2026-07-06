@@ -245,12 +245,7 @@ export const getCreatorAnalytics = async (req: AuthRequest, res: Response) => {
     // For period-based shares, we'd need a PostShare model. For now return total.
     const periodShares = totalShares._sum.shareCount || 0;
 
-    // 5. Current follower count
-    const currentFollowers = await prisma.follow.count({
-      where: { followingId: userId, status: 'accepted' },
-    });
-
-    // 6. Total posts
+    // 5. Total posts
     const totalPosts = await prisma.post.count({ where: { userId } });
 
     // 7. Daily breakdown for chart

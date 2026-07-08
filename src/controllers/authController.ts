@@ -525,6 +525,38 @@ export const confirmAccountDeletion = async (req: Request, res: Response) => {
 
     // Delete user and all related data (sequential approach to avoid transaction issues)
     try {
+      // Delete all user's files from Cloudflare R2
+      try {
+        const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+        const { r2Client } = await import('../utils/r2');
+        const publicUrl = process.env.CLOUDFLARE_R2_PUBLIC_URL || '';
+
+        // Get all posts to delete their media files
+        const userPosts = await prisma.post.findMany({ where: { userId: user.id }, select: { mediaUrl: true, thumbnailUrl: true } });
+        for (const post of userPosts) {
+          if (post.mediaUrl && post.mediaUrl.startsWith(publicUrl)) {
+            const key = post.mediaUrl.replace(publicUrl + '/', '');
+            await r2Client.send(new DeleteObjectCommand({ Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME, Key: key })).catch(() => {});
+          }
+          if (post.thumbnailUrl && post.thumbnailUrl.startsWith(publicUrl)) {
+            const key = post.thumbnailUrl.replace(publicUrl + '/', '');
+            await r2Client.send(new DeleteObjectCommand({ Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME, Key: key })).catch(() => {});
+          }
+        }
+
+        // Delete all user's sounds and their audio files
+        const userSounds = await (prisma as any).sound.findMany({ where: { creatorId: user.id }, select: { id: true, audioUrl: true } });
+        for (const sound of userSounds) {
+          if (sound.audioUrl && sound.audioUrl.startsWith(publicUrl)) {
+            const key = sound.audioUrl.replace(publicUrl + '/', '');
+            await r2Client.send(new DeleteObjectCommand({ Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME, Key: key })).catch(() => {});
+          }
+        }
+        await (prisma as any).sound.deleteMany({ where: { creatorId: user.id } });
+      } catch (r2Err) {
+        console.warn('R2 cleanup failed (non-critical):', r2Err);
+      }
+
       // Delete user's posts first
       await prisma.post.deleteMany({ where: { userId: user.id } });
       await prisma.like.deleteMany({ where: { userId: user.id } });

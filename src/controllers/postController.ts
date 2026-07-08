@@ -657,6 +657,40 @@ export const deletePost = async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: 'Forbidden. You do not own this post.' });
     }
 
+    // Delete media file from Cloudflare R2
+    // BUT only if no sound is using this URL (sound should stay)
+    const sound = await (prisma as any).sound.findFirst({ where: { postId } });
+    if (!sound && post.mediaUrl) {
+      // No sound linked — safe to delete the file
+      try {
+        const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+        const { r2Client } = await import('../utils/r2');
+        const publicUrl = process.env.CLOUDFLARE_R2_PUBLIC_URL || '';
+        if (post.mediaUrl.startsWith(publicUrl)) {
+          const key = post.mediaUrl.replace(publicUrl + '/', '');
+          await r2Client.send(new DeleteObjectCommand({
+            Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME,
+            Key: key,
+          }));
+        }
+        // Also delete thumbnail if exists
+        if (post.thumbnailUrl && post.thumbnailUrl.startsWith(publicUrl)) {
+          const thumbKey = post.thumbnailUrl.replace(publicUrl + '/', '');
+          await r2Client.send(new DeleteObjectCommand({
+            Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME,
+            Key: thumbKey,
+          }));
+        }
+      } catch (r2Err) {
+        console.warn('R2 delete failed (non-critical):', r2Err);
+      }
+    }
+    // If sound exists, keep the file (others may use the sound)
+    // But unlink the post from sound
+    if (sound) {
+      await (prisma as any).sound.update({ where: { id: sound.id }, data: { postId: null } }).catch(() => {});
+    }
+
     await prisma.post.delete({ where: { id: postId } });
 
     res.status(200).json({ success: true, message: 'Post deleted successfully.' });

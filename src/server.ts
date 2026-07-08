@@ -17,6 +17,7 @@ import messageRoutes from './routes/messageRoutes';
 import monetizeRoutes from './routes/monetizeRoutes';
 import noteRoutes from './routes/noteRoutes';
 import postRoutes from './routes/postRoutes';
+import soundRoutes from './routes/soundRoutes';
 import storageRoutes from './routes/storageRoutes';
 import storyRoutes from './routes/storyRoutes';
 import supportRoutes from './routes/supportRoutes';

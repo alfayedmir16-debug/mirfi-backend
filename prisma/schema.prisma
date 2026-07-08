@@ -90,6 +90,7 @@ model Post {
    visibility     String    @default("public") // "public" | "private" | "unlisted" | "close_friends"
   viewCount      Int       @default(0)
   shareCount     Int       @default(0)
+  soundId        String?   // linked sound (if reel uses a sound)
   createdAt      DateTime  @default(now())
 
   user           User      @relation("PostOwner", fields: [userId], references: [id], onDelete: Cascade)
@@ -472,6 +473,8 @@ model SupportTicket {
   category    String
   description String
   images      String[]
+  status      String   @default("open")
+  adminReply  String?
   createdAt   DateTime @default(now())
 }
 
@@ -542,4 +545,21 @@ model AdminUser {
   role         String   @default("admin")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+
+// ── Sound System (TikTok-style original sounds) ──
+model Sound {
+  id          String   @id @default(uuid())
+  title       String   // "Original Sound - @username" or custom name
+  audioUrl    String   // Cloudflare R2 URL (.mp3)
+  duration    Float?   // seconds
+  coverUrl    String?  // thumbnail image
+  creatorId   String   // user who created/uploaded this sound
+  postId      String?  // source post (if auto-extracted)
+  useCount    Int      @default(1) // how many reels use this sound
+  createdAt   DateTime @default(now())
+
+  @@index([creatorId])
+  @@index([useCount])
 }

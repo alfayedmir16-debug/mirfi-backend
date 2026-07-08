@@ -85,6 +85,7 @@ app.use('/api/notes', noteRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/highlights', highlightRoutes);
 app.use('/api/monetize', monetizeRoutes);
+app.use('/api/sounds', soundRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/calls', callRoutes);
 app.use('/api/e2ee', e2eeRoutes);

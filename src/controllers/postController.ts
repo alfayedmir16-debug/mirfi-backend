@@ -47,9 +47,10 @@ export const createPost = async (req: AuthRequest, res: Response) => {
     if (type === 'reel' && mediaUrl) {
       try {
         const creator = await prisma.user.findUnique({ where: { id: req.user.id }, select: { username: true } });
+        const soundTitle = caption && caption.trim() ? caption.trim().substring(0, 50) : `Original Sound - @${creator?.username || 'user'}`;
         await (prisma as any).sound.create({
           data: {
-            title: `Original Sound - @${creator?.username || 'user'}`,
+            title: soundTitle,
             audioUrl: mediaUrl,
             creatorId: req.user.id,
             postId: (post as any).id,

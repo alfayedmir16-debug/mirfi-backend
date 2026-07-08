@@ -60,7 +60,7 @@ router.get('/trending', authenticateJWT as any, async (req: any, res: any) => {
     });
 
     // Enrich with creator info
-    const creatorIds = [...new Set(sounds.map((s: any) => s.creatorId))];
+    const creatorIds = [...new Set(sounds.map((s: any) => s.creatorId))] as string[];
     const creators = await prisma.user.findMany({
       where: { id: { in: creatorIds } },
       select: { id: true, username: true, displayName: true, profilePicture: true },
@@ -93,7 +93,7 @@ router.get('/search', authenticateJWT as any, async (req: any, res: any) => {
       take: 20,
     });
 
-    const creatorIds = [...new Set(sounds.map((s: any) => s.creatorId))];
+    const creatorIds = [...new Set(sounds.map((s: any) => s.creatorId))] as string[];
     const creators = await prisma.user.findMany({
       where: { id: { in: creatorIds } },
       select: { id: true, username: true, displayName: true },

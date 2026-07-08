@@ -42,6 +42,37 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// ─── API Rate Limiting ───
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+const RATE_LIMIT = 100; // max requests per window
+const RATE_WINDOW = 60 * 1000; // 1 minute window
+
+app.use((req, res, next) => {
+  const ip = req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+
+  if (!entry || now > entry.resetTime) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + RATE_WINDOW });
+    return next();
+  }
+
+  if (entry.count >= RATE_LIMIT) {
+    return res.status(429).json({ error: 'Too many requests. Please slow down.' });
+  }
+
+  entry.count++;
+  next();
+});
+
+// Clean up rate limit map every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitMap) {
+    if (now > entry.resetTime) rateLimitMap.delete(ip);
+  }
+}, 5 * 60 * 1000);
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/posts', postRoutes);

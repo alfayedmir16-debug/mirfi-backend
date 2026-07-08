@@ -5,7 +5,8 @@ import { prisma } from '../db';
 import { AuthRequest } from '../middleware/auth';
 import { sendResetCodeEmail } from '../services/emailService';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'mirfi_super_secret_jwt_token_2026_key_abc123';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is required');
 
 export const register = async (req: Request, res: Response) => {
   const { username, email, password, displayName } = req.body;
@@ -165,6 +166,34 @@ export const getMe = async (req: AuthRequest, res: Response) => {
         followingCount: user._count.following
       }
     });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ──────────────────────────────────────────────
+// Refresh token — issues a new token if current is valid
+// ──────────────────────────────────────────────
+export const refreshToken = async (req: AuthRequest, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Unauthorized.' });
+  }
+
+  try {
+    // Verify user still exists
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user) {
+      return res.status(401).json({ error: 'User no longer exists.' });
+    }
+
+    // Issue a fresh 30-day token
+    const newToken = jwt.sign(
+      { id: user.id, username: user.username, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    res.json({ token: newToken });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

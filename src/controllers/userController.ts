@@ -469,6 +469,8 @@ export const getNotifications = async (req: any, res: any) => {
     const notifications = await prisma.notification.findMany({
       where: {
         userId,
+        // Exclude regular chat message notifications — those are in the chat inbox
+        type: { not: "message" },
       },
       orderBy: {
         createdAt: "desc",

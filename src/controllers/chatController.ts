@@ -177,26 +177,25 @@ export const sendMessage = async (req: any, res: any) => {
     } catch (_) {}
 
     // Notification + push
+    // Push notification only — no DB notification for regular messages (they show in chat inbox)
     try {
       const isEncMsg = isEncrypted || false;
-      const msgType = type === "post_share" ? "shared a post" : type === "reel_share" ? "shared a reel" : mediaUrl ? "sent an image" : isEncMsg ? "🔒 Encrypted message" : text ? `"${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"` : "sent a message";
-      await prisma.notification.create({
-        data: { userId: recipientId, senderId, type: "message", text: msgType },
-      });
       const { sendPushNotification } = await import("../utils/pushNotifications");
       const sender = await prisma.user.findUnique({ where: { id: senderId }, select: { username: true, displayName: true, profilePicture: true } });
       if (sender) {
         const richText = isEncMsg ? "🔒 Encrypted message" : text ? text.substring(0, 200) : mediaUrl ? "📸 Photo" : "sent a message";
+        // Send a data-only push so the frontend (Notifee) can build the MessagingStyle notification
         sendPushNotification(
           recipientId,
-          sender.displayName || sender.username,
-          richText,
+          "",
+          "",
           {
             type: "message",
             senderId,
             senderName: sender.displayName || sender.username,
-            senderAvatar: sender.profilePicture,
-            messageText: isEncMsg ? "" : text || "",
+            senderAvatar: sender.profilePicture || "",
+            messageText: richText,
+            timestamp: String(Date.now()),
           }
         );
       }
@@ -217,7 +216,7 @@ export const getRooms = async (req: any, res: any) => {
     const userId = req.user.id;
 
     const rooms = await (prisma.chatRoom as any).findMany({
-      where: { OR: [{ user1Id: userId }, { user2Id: userId }], NOT: { deletedFor: { has: userId } } },
+      where: { OR: [{ user1Id: userId }, { user2Id: userId }], NOT: { deletedFor: { has: userId } }, isVibe: false },
       include: {
         user1: { select: { id: true, username: true, displayName: true, profilePicture: true } },
         user2: { select: { id: true, username: true, displayName: true, profilePicture: true } },

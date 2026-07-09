@@ -23,6 +23,7 @@ import storyRoutes from './routes/storyRoutes';
 import supportRoutes from './routes/supportRoutes';
 import userRoutes from './routes/userRoutes';
 import utilsRoutes from './routes/utilsRoutes';
+import vibeRoutes from './routes/vibeRoutes';
 import { setupSocket } from './utils/socketHandler';
 
 const app = express();
@@ -90,6 +91,7 @@ app.use('/api/sounds', soundRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/calls', callRoutes);
 app.use('/api/e2ee', e2eeRoutes);
+app.use('/api/vibe', vibeRoutes);
 app.use('/api/utils', utilsRoutes);
 
 // Basic Health Check Endpoint

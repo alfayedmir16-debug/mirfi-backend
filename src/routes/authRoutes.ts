@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { confirmAccountDeletion, forgotPassword, getMe, googleLogin, login, register, requestAccountDeletion, resetPassword, updateProfile } from '../controllers/authController';
+import { confirmAccountDeletion, forgotPassword, getMe, googleLogin, login, refreshToken, register, requestAccountDeletion, resetPassword, updateProfile } from '../controllers/authController';
 import { authenticateJWT } from '../middleware/auth';
 
 const router = Router();
@@ -7,6 +7,7 @@ const router = Router();
 router.post('/register', register);
 router.post('/login', login);
 router.get('/me', authenticateJWT as any, getMe as any);
+router.post('/refresh-token', authenticateJWT as any, refreshToken as any);
 router.put('/update', authenticateJWT as any, updateProfile as any);
 router.post('/forgot-password', forgotPassword as any);
 router.post('/reset-password', resetPassword as any);

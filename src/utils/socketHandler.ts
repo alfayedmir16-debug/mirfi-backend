@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import { Socket, Server as SocketIOServer } from "socket.io";
 import prisma from "../config/db";
+import { handleVibeDisconnect } from "../controllers/vibeController";
 
 const onlineUsers = new Map<string, Set<string>>(); // userId → Set<socketId>
 
@@ -73,19 +74,25 @@ export const setupSocket = (io: SocketIOServer) => {
             io.to(`user:${userId}`).emit("message_delivered", { messageId: message.id });
           }
 
-          // Notification + push for offline (skip if messages muted)
+          // Push notification for offline (skip if messages muted)
+          // Note: No DB notification for regular messages — they show in chat inbox only
           try {
             const roomForMute = await (prisma.chatRoom as any).findUnique({ where: { id: data.roomId }, select: { mutedMessages: true } });
             const isMsgMuted = roomForMute?.mutedMessages?.includes(recipientId);
-            const msgType = data.type === "post_share" ? "shared a post" : data.type === "reel_share" ? "shared a reel" : data.mediaUrl ? "sent an image" : data.text ? `"${data.text.substring(0, 60)}${data.text.length > 60 ? "..." : ""}"` : "sent a message";
-            await prisma.notification.create({
-              data: { userId: recipientId, senderId: userId, type: "message", text: msgType },
-            });
             if (!isMsgMuted) {
               const { sendPushNotification } = await import("./pushNotifications");
-              const sender = await prisma.user.findUnique({ where: { id: userId }, select: { username: true } });
+              const sender = await prisma.user.findUnique({ where: { id: userId }, select: { username: true, displayName: true, profilePicture: true } });
               if (sender) {
-                sendPushNotification(recipientId, sender.username, msgType, { type: "message", senderId: userId });
+                const richText = data.mediaUrl ? "📸 Photo" : data.text ? data.text.substring(0, 200) : "sent a message";
+                // Send data-only push so frontend Notifee can build grouped MessagingStyle notification
+                sendPushNotification(recipientId, "", "", {
+                  type: "message",
+                  senderId: userId,
+                  senderName: sender.displayName || sender.username,
+                  senderAvatar: sender.profilePicture || "",
+                  messageText: richText,
+                  timestamp: String(Date.now()),
+                });
               }
             }
           } catch (_) {}
@@ -244,15 +251,17 @@ export const setupSocket = (io: SocketIOServer) => {
       const sockets = onlineUsers.get(userId);
       if (sockets) {
         sockets.delete(socket.id);
-        if (sockets.size === 0) {
-          onlineUsers.delete(userId);
-          try {
-            const userPref = await (prisma.user as any).findUnique({ where: { id: userId }, select: { hideOnlineStatus: true } });
-            if (!userPref?.hideOnlineStatus) {
-              socket.broadcast.emit("user_offline", { userId });
-            }
-          } catch { socket.broadcast.emit("user_offline", { userId }); }
-        }
+      if (sockets.size === 0) {
+        onlineUsers.delete(userId);
+        try {
+          const userPref = await (prisma.user as any).findUnique({ where: { id: userId }, select: { hideOnlineStatus: true } });
+          if (!userPref?.hideOnlineStatus) {
+            socket.broadcast.emit("user_offline", { userId });
+          }
+        } catch { socket.broadcast.emit("user_offline", { userId }); }
+        // Vibe: if this user fully disconnected while in an active session, end it & refund partner
+        try { await handleVibeDisconnect(userId, io); } catch (_) {}
+      }
       }
     });
   });

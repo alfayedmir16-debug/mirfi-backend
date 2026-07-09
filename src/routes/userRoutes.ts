@@ -130,8 +130,14 @@ router.get("/suggestions", authenticateJWT as any, async (req: any, res: any) =>
 
     const newFormatted = newUsers.map((u: any) => ({ ...u, reason: 'new' }));
 
-    // Combine: mutuals first, then popular, then new
-    const suggestions = [...mutualSuggestions, ...popularFormatted, ...newFormatted].slice(0, 15);
+    // Combine and shuffle for variety on each refresh
+    const all = [...mutualSuggestions, ...popularFormatted, ...newFormatted];
+    // Shuffle array
+    for (let i = all.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [all[i], all[j]] = [all[j], all[i]];
+    }
+    const suggestions = all.slice(0, 15);
 
     res.json(suggestions);
   } catch (e: any) {

@@ -69,7 +69,13 @@ model User {
   blocksInitiated  Block[]   @relation("Blocker")
   blocksReceived   Block[]   @relation("Blocked")
   
-  notifications    Notification[]
+   notifications    Notification[]
+
+   // Vibe Chat
+   vibeTickets      VibeTicket[]  @relation("VibeTicketUser")
+   vibeSessionsAs1  VibeSession[] @relation("VibeUser1")
+   vibeSessionsAs2  VibeSession[] @relation("VibeUser2")
+   vibeUsages       VibeUsage[]   @relation("VibeUsageUser")
 }
 
 model Post {
@@ -256,9 +262,11 @@ model ChatRoom {
 
   user1      User      @relation("ChatRoomUser1", fields: [user1Id], references: [id], onDelete: Cascade)
   user2      User      @relation("ChatRoomUser2", fields: [user2Id], references: [id], onDelete: Cascade)
-  messages   Message[]
+   messages   Message[]
 
-  @@unique([user1Id, user2Id])
+   vibeSession VibeSession? @relation("VibeRoom")
+
+   @@unique([user1Id, user2Id])
   @@index([user1Id])
   @@index([user2Id])
 }
@@ -297,6 +305,9 @@ model Message {
   // E2EE: encrypted message data (format: iv:ciphertext:tag)
   isEncrypted    Boolean  @default(false)
   encryptedData  String?  // stored if text is encrypted
+
+  // Vibe Chat: anonymous matching chat rooms (hidden from normal list until revealed)
+  isVibe         Boolean  @default(false)
 
   // Scheduled send
   scheduledAt DateTime?
@@ -562,4 +573,68 @@ model Sound {
 
   @@index([creatorId])
   @@index([useCount])
+}
+
+// ──────────────────────────────────────────────
+// VIBE CHAT (Anonymous matching chat)
+// ──────────────────────────────────────────────
+
+// A pending "looking for a match" entry
+model VibeTicket {
+  id              String   @id @default(uuid())
+  userId          String
+  mood            String   // selected mood key OR custom text
+  isCustom        Boolean  @default(false)
+  customPrompt    String?  // max 30 words
+  status          String   @default("waiting") // waiting | matched | expired
+  matchedSessionId String?
+  createdAt       DateTime @default(now())
+  expiresAt       DateTime // 90s TTL
+
+  user User @relation("VibeTicketUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([mood, status])
+  @@index([userId])
+}
+
+// An active anonymous chat session between two users
+model VibeSession {
+  id                String   @id @default(uuid())
+  roomId            String   @unique
+  user1Id           String
+  user2Id           String
+  mood              String
+  user1CustomPrompt String?
+  user2CustomPrompt String?
+  status            String   @default("active") // active | revealed | ended
+  user1Revealed     Boolean  @default(false)
+  user2Revealed     Boolean  @default(false)
+  user1Quit         Boolean  @default(false)
+  user2Quit         Boolean  @default(false)
+  score             Int      @default(0)
+  lastMessageAt     DateTime?
+  lastSenderId      String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  endedAt           DateTime?
+
+  room   ChatRoom @relation("VibeRoom", fields: [roomId], references: [id], onDelete: Cascade)
+  user1  User     @relation("VibeUser1", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2  User     @relation("VibeUser2", fields: [user2Id], references: [id], onDelete: Cascade)
+
+  @@index([user1Id, status])
+  @@index([user2Id, status])
+}
+
+// Daily usage quota (2 free uses/day + bonus from rewarded ads)
+model VibeUsage {
+  id         String @id @default(uuid())
+  userId     String
+  date       String // YYYY-MM-DD
+  used       Int    @default(0)
+  bonusUses  Int    @default(0) // granted by watching rewarded ads
+
+  user User @relation("VibeUsageUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
 }

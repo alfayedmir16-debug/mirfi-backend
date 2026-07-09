@@ -1,18 +1,8 @@
-import { Expo, ExpoPushMessage } from 'expo-server-sdk';
+import { Expo } from 'expo-server-sdk';
 import prisma from '../config/db';
 
 const expo = new Expo();
 
-/**
- * Send push notification with Instagram-style grouping.
- * Multiple messages from the same sender collapse into one notification
- * showing all messages stacked (like Instagram DMs).
- * 
- * Uses:
- * - `threadId` (iOS) — groups notifications by conversation
- * - `channelId` (Android) — groups by channel
- * - `_contentAvailable` — allows background processing
- */
 export async function sendPushNotification(userId: string, title: string, body: string, data?: Record<string, any>) {
   try {
     const user = await prisma.user.findUnique({
@@ -27,74 +17,20 @@ export async function sendPushNotification(userId: string, title: string, body: 
       return;
     }
 
-    // For silent/cancel notifications, send minimal payload
-    if (data?.silent || data?.type === 'cancel_notification') {
-      const message: ExpoPushMessage = {
-        to: user.pushToken,
-        data: data || {},
-        priority: 'high',
-        _contentAvailable: true,
-      } as any;
-      await expo.sendPushNotificationsAsync([message]);
-      return;
-    }
-
-    // Determine grouping — same sender's messages stack together
-    const senderId = data?.senderId || 'general';
-
-    // For message notifications, fetch recent unread messages to show stacked
-    let stackedBody = body;
-    if (data?.type === 'message' && senderId) {
-      try {
-        const recentMsgs = await prisma.message.findMany({
-          where: {
-            senderId,
-            room: { OR: [{ user1Id: userId }, { user2Id: userId }] },
-            status: { not: 'SEEN' },
-          },
-          orderBy: { createdAt: 'desc' },
-          take: 5,
-          select: { text: true, type: true },
-        });
-
-        if (recentMsgs.length > 1) {
-          const lines = recentMsgs
-            .reverse()
-            .map(m => m.type === 'image' ? '📷 Photo' : m.type === 'audio' ? '🎤 Voice' : m.text || '💬')
-            .slice(-4);
-          stackedBody = lines.join('\n');
-        }
-      } catch {}
-    }
-
-    // Get sender's profile picture
-    let senderAvatar: string | undefined;
-    if (senderId && senderId !== 'general') {
-      try {
-        const sender = await prisma.user.findUnique({
-          where: { id: senderId },
-          select: { profilePicture: true },
-        });
-        if (sender?.profilePicture && !sender.profilePicture.includes('placeholder')) {
-          senderAvatar = sender.profilePicture;
-        }
-      } catch {}
-    }
-
-    const message: ExpoPushMessage = {
+    const message: any = {
       to: user.pushToken,
-      sound: 'default',
-      title,
-      body: stackedBody,
-      data: {
-        ...data,
-        // Tell client to dismiss previous notification from same sender
-        collapseId: data?.type === 'message' ? `chat_${senderId}` : undefined,
-        senderAvatar,
-      },
-      channelId: data?.type === 'message' ? 'messages' : 'default',
-      priority: 'high',
+      data: data || {},
     };
+
+    if (title || body) {
+      message.sound = 'default';
+      if (title) message.title = title;
+      if (body) message.body = body;
+    } else {
+      // Data-only push — ensure it wakes the app for background processing
+      message._contentAvailable = true;
+      message.priority = 'high';
+    }
 
     const [ticket] = await expo.sendPushNotificationsAsync([message]);
     if (ticket.status === 'error') {

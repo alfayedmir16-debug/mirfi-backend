@@ -257,6 +257,8 @@ model ChatRoom {
   deletedForAt    DateTime?
   // Vanish mode (per-user — userIds who have it enabled)
   vanishMode      String[]  @default([])
+  // Vibe Chat: anonymous matching chat rooms (hidden from normal list until revealed)
+  isVibe          Boolean   @default(false)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 

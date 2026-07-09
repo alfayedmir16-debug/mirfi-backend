@@ -534,6 +534,7 @@ async function sessionShape(session: any, userId: string) {
     canReveal: percent >= 80 && session.status === 'active',
     iRevealed: isUser1 ? session.user1Revealed : session.user2Revealed,
     partnerRevealed: isUser1 ? session.user2Revealed : session.user1Revealed,
+    partnerId: isUser1 ? session.user2Id : session.user1Id,
     createdAt: session.createdAt,
   };
 }

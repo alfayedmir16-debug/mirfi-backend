@@ -94,6 +94,34 @@ app.use('/api/e2ee', e2eeRoutes);
 app.use('/api/vibe', vibeRoutes);
 app.use('/api/utils', utilsRoutes);
 
+// ─── App Version Config (Force/Soft Update) ───
+app.get('/api/app/config', async (req, res) => {
+  try {
+    // Check if AppConfig table exists, otherwise use defaults
+    let config: any = null;
+    try {
+      config = await (prisma as any).appConfig.findFirst({ where: { key: 'app_update' } });
+    } catch {}
+    
+    if (config?.value) {
+      return res.json(JSON.parse(config.value));
+    }
+
+    // Default config (no force update)
+    res.json({
+      minVersion: '1.0.0',        // Minimum allowed version (force update below this)
+      latestVersion: '1.0.0',     // Latest available version (soft update if below this)
+      forceUpdate: false,         // Master switch for force update
+      softUpdate: false,          // Master switch for soft update
+      updateUrl: 'https://play.google.com/store/apps/details?id=com.mirfi',
+      maintenanceMode: false,     // If true, show maintenance screen
+      maintenanceMessage: '',
+    });
+  } catch (e) {
+    res.json({ minVersion: '1.0.0', latestVersion: '1.0.0', forceUpdate: false, softUpdate: false, updateUrl: '', maintenanceMode: false });
+  }
+});
+
 // Basic Health Check Endpoint
 app.get('/health', async (req, res) => {
   try {

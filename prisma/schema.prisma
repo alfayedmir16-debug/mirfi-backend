@@ -640,3 +640,13 @@ model VibeUsage {
 
   @@unique([userId, date])
 }
+
+
+// ── App Configuration (Force Update, Maintenance, etc.) ──
+model AppConfig {
+  id        String   @id @default(uuid())
+  key       String   @unique  // e.g., "app_update"
+  value     String   // JSON string with config values
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}

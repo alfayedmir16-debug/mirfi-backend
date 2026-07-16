@@ -105,7 +105,7 @@ export const findVibe = async (req: any, res: any) => {
       orderBy: { createdAt: 'asc' },
     });
 
-    // Pick first candidate that is NOT blocked by/with me
+    // Pick first candidate that is NOT blocked, NOT followed (either direction), and has NO prior message history
     for (const cand of candidates) {
       const blocked = await prisma.block.findFirst({
         where: {
@@ -115,9 +115,33 @@ export const findVibe = async (req: any, res: any) => {
           ],
         },
       });
-      if (!blocked) {
-        return await matchWith(req, res, userId, cand, mood, customPrompt, isCustom);
-      }
+      if (blocked) continue;
+
+      // Check if either user follows the other
+      const followExists = await prisma.follow.findFirst({
+        where: {
+          OR: [
+            { followerId: userId, followingId: cand.userId },
+            { followerId: cand.userId, followingId: userId },
+          ],
+        },
+      });
+      if (followExists) continue;
+
+      // Check if they have any prior chat history (non-vibe rooms with messages)
+      const priorChat = await prisma.chatRoom.findFirst({
+        where: {
+          isVibe: false,
+          OR: [
+            { user1Id: userId, user2Id: cand.userId },
+            { user1Id: cand.userId, user2Id: userId },
+          ],
+          messages: { some: {} },
+        },
+      });
+      if (priorChat) continue;
+
+      return await matchWith(req, res, userId, cand, mood, customPrompt, isCustom);
     }
 
     // No (unblocked) candidate → create waiting ticket

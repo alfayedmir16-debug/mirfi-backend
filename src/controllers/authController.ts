@@ -8,6 +8,25 @@ import { sendResetCodeEmail } from '../services/emailService';
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is required');
 
+const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET || JWT_SECRET + '_refresh';
+
+// Helper: Generate access + refresh token pair
+function generateTokenPair(user: { id: string; username: string; email: string }) {
+  const accessToken = jwt.sign(
+    { id: user.id, username: user.username, email: user.email },
+    JWT_SECRET!,
+    { expiresIn: '30d' }
+  );
+
+  const refreshToken = jwt.sign(
+    { id: user.id, type: 'refresh' },
+    REFRESH_TOKEN_SECRET,
+    { expiresIn: '365d' } // 1 year — user stays logged in until app delete
+  );
+
+  return { accessToken, refreshToken };
+}
+
 export const register = async (req: Request, res: Response) => {
   const { username, email, password, displayName } = req.body;
 
@@ -53,15 +72,12 @@ export const register = async (req: Request, res: Response) => {
       }
     });
 
-    // 4. Generate Token
-    const token = jwt.sign(
-      { id: user.id, username: user.username, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
+    // 4. Generate Token Pair
+    const { accessToken, refreshToken } = generateTokenPair(user);
 
     res.status(201).json({
-      token,
+      token: accessToken,
+      refreshToken,
       user: {
         id: user.id,
         username: user.username,
@@ -103,15 +119,12 @@ export const login = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid username or password.' });
     }
 
-    // 3. Generate Token
-    const token = jwt.sign(
-      { id: user.id, username: user.username, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
+    // 3. Generate Token Pair
+    const { accessToken, refreshToken } = generateTokenPair(user);
 
     res.status(200).json({
-      token,
+      token: accessToken,
+      refreshToken,
       user: {
         id: user.id,
         username: user.username,
@@ -172,28 +185,47 @@ export const getMe = async (req: AuthRequest, res: Response) => {
 };
 
 // ──────────────────────────────────────────────
-// Refresh token — issues a new token if current is valid
+// Refresh token — issues new access + refresh tokens using a valid refresh token
+// Does NOT require a valid access token — works even after access token expires
 // ──────────────────────────────────────────────
-export const refreshToken = async (req: AuthRequest, res: Response) => {
-  if (!req.user) {
-    return res.status(401).json({ error: 'Unauthorized.' });
+export const refreshToken = async (req: Request, res: Response) => {
+  const { refreshToken: incomingRefreshToken } = req.body;
+
+  // Also support the old flow: if user sends via Authorization header (backward compat)
+  const authHeader = req.headers.authorization;
+  const tokenFromHeader = authHeader?.split(' ')[1];
+
+  // Prefer body refresh token, fall back to trying header token as refresh
+  const tokenToVerify = incomingRefreshToken || tokenFromHeader;
+
+  if (!tokenToVerify) {
+    return res.status(401).json({ error: 'Refresh token is required.' });
   }
 
   try {
+    // Try to verify as refresh token first
+    let decoded: any;
+    try {
+      decoded = jwt.verify(tokenToVerify, REFRESH_TOKEN_SECRET);
+    } catch (refreshErr) {
+      // Backward compat: try verifying as old access token (for users who haven't re-logged in yet)
+      try {
+        decoded = jwt.verify(tokenToVerify, JWT_SECRET!);
+      } catch {
+        return res.status(403).json({ error: 'Invalid or expired refresh token. Please login again.' });
+      }
+    }
+
     // Verify user still exists
-    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
     if (!user) {
       return res.status(401).json({ error: 'User no longer exists.' });
     }
 
-    // Issue a fresh 30-day token
-    const newToken = jwt.sign(
-      { id: user.id, username: user.username, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
+    // Issue fresh token pair
+    const { accessToken, refreshToken: newRefreshToken } = generateTokenPair(user);
 
-    res.json({ token: newToken });
+    res.json({ token: accessToken, refreshToken: newRefreshToken });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -418,15 +450,12 @@ export const googleLogin = async (req: Request, res: Response) => {
       });
     }
 
-    // 3. Generate JWT Token
-    const token = jwt.sign(
-      { id: user.id, username: user.username, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    // 3. Generate JWT Token Pair
+    const { accessToken, refreshToken } = generateTokenPair(user);
 
     res.status(200).json({
-      token,
+      token: accessToken,
+      refreshToken,
       user: {
         id: user.id,
         username: user.username,

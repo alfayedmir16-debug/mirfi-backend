@@ -189,6 +189,8 @@ export const setupSocket = (io: SocketIOServer) => {
           },
           select: { mutedCalls: true },
         });
+        // mutedCalls stores userIds of users who muted calls in this room
+        // If the recipient has muted calls, don't ring them (but still send push)
         const isCallMuted = room?.mutedCalls?.includes(recipientId);
         if (!isCallMuted) {
           io.to(`user:${recipientId}`).emit("incoming_call", {

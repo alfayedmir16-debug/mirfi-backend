@@ -7,7 +7,7 @@ const router = Router();
 router.post('/register', register);
 router.post('/login', login);
 router.get('/me', authenticateJWT as any, getMe as any);
-router.post('/refresh-token', authenticateJWT as any, refreshToken as any);
+router.post('/refresh-token', refreshToken as any);
 router.put('/update', authenticateJWT as any, updateProfile as any);
 router.post('/forgot-password', forgotPassword as any);
 router.post('/reset-password', resetPassword as any);

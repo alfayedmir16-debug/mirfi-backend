@@ -97,6 +97,8 @@ model Post {
   viewCount      Int       @default(0)
   shareCount     Int       @default(0)
   soundId        String?   // linked sound (if reel uses a sound)
+  textLayers     Json?     // text overlay data for reels (position, style, content)
+  audioUrl       String?   // background music URL for reels
   createdAt      DateTime  @default(now())
 
   user           User      @relation("PostOwner", fields: [userId], references: [id], onDelete: Cascade)
@@ -370,12 +372,16 @@ model Notification {
 
 // ── Notes (24h disappearing text status, visible to followers) ──
 model Note {
-  id        String   @id @default(uuid())
-  userId    String   @unique  // one active note per user
-  text      String
-  emoji     String?
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  id          String   @id @default(uuid())
+  userId      String   @unique  // one active note per user
+  text        String
+  emoji       String?
+  songUrl     String?
+  songTitle   String?
+  songArtist  String?
+  songArtwork String?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
 
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 

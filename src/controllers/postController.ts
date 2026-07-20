@@ -3,7 +3,7 @@ import { prisma } from '../db';
 import { AuthRequest } from '../middleware/auth';
 
 export const createPost = async (req: AuthRequest, res: Response) => {
-  const { type, mediaUrl, thumbnailUrl, caption, category, hideLikes, hideShares, collabUserId, scheduledAt, visibility } = req.body;
+  const { type, mediaUrl, thumbnailUrl, caption, category, hideLikes, hideShares, collabUserId, scheduledAt, visibility, textLayers, audioUrl } = req.body;
 
   if (!req.user) {
     return res.status(401).json({ error: 'Unauthorized.' });
@@ -15,6 +15,14 @@ export const createPost = async (req: AuthRequest, res: Response) => {
 
   try {
     const isScheduled = !!scheduledAt;
+    // Parse textLayers if it's a string
+    let parsedTextLayers = null;
+    if (textLayers) {
+      try {
+        parsedTextLayers = typeof textLayers === 'string' ? JSON.parse(textLayers) : textLayers;
+      } catch { parsedTextLayers = null; }
+    }
+
     const post = await prisma.post.create({
       data: {
         userId: req.user.id,
@@ -30,6 +38,8 @@ export const createPost = async (req: AuthRequest, res: Response) => {
         scheduledAt: isScheduled ? new Date(scheduledAt) : null,
         isScheduled: isScheduled,
         visibility: visibility || 'public',
+        textLayers: parsedTextLayers,
+        audioUrl: audioUrl || null,
       } as any,
       include: {
         user: {
@@ -42,6 +52,20 @@ export const createPost = async (req: AuthRequest, res: Response) => {
         }
       }
     });
+
+    // Update textLayers and audioUrl via raw query (in case Prisma client hasn't been regenerated)
+    if (parsedTextLayers || audioUrl) {
+      try {
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Post" SET "textLayers" = $1::jsonb, "audioUrl" = $2 WHERE "id" = $3`,
+          parsedTextLayers ? JSON.stringify(parsedTextLayers) : null,
+          audioUrl || null,
+          post.id
+        );
+      } catch (rawErr) {
+        console.log('Raw update for textLayers/audioUrl skipped (columns may not exist yet):', rawErr);
+      }
+    }
 
     // Auto-extract sound for reels (TikTok-style original sounds)
     if (type === 'reel' && mediaUrl) {

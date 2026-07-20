@@ -270,19 +270,48 @@ export const getChatHistory = async (req: any, res: any) => {
       return res.status(403).json({ error: "Not a participant" });
     }
 
+    // Pagination params
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
+    const before = req.query.before as string | undefined;
+
     // If user deleted this chat, only show messages after the deletion timestamp
     const deletedAt = (room.deletedFor || []).includes(userId) ? null : room.deletedForAt;
     const afterDate = deletedAt || undefined;
 
-    const messages = await prisma.message.findMany({
-      where: { roomId, ...(afterDate ? { createdAt: { gt: afterDate } } : {}) },
-      orderBy: { createdAt: "asc" },
-      include: {
-        sender: { select: { id: true, username: true, displayName: true, profilePicture: true } },
-        reactions: { include: { user: { select: { id: true, username: true } } } },
-        replyTo: { select: { id: true, text: true, type: true, sender: { select: { id: true, username: true, displayName: true } } } },
-      } as any,
-    });
+    let messages: any[];
+
+    if (before) {
+      // Loading older messages (pagination) — get messages BEFORE the cursor
+      const cursorMsg = await prisma.message.findUnique({ where: { id: before }, select: { createdAt: true } });
+      messages = await prisma.message.findMany({
+        where: {
+          roomId,
+          ...(afterDate ? { createdAt: { gt: afterDate } } : {}),
+          ...(cursorMsg ? { createdAt: { lt: cursorMsg.createdAt } } : {}),
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        include: {
+          sender: { select: { id: true, username: true, displayName: true, profilePicture: true } },
+          reactions: { include: { user: { select: { id: true, username: true } } } },
+          replyTo: { select: { id: true, text: true, type: true, sender: { select: { id: true, username: true, displayName: true } } } },
+        } as any,
+      });
+      messages.reverse(); // Return in ascending order (oldest first)
+    } else {
+      // Initial load — get LATEST N messages
+      messages = await prisma.message.findMany({
+        where: { roomId, ...(afterDate ? { createdAt: { gt: afterDate } } : {}) },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        include: {
+          sender: { select: { id: true, username: true, displayName: true, profilePicture: true } },
+          reactions: { include: { user: { select: { id: true, username: true } } } },
+          replyTo: { select: { id: true, text: true, type: true, sender: { select: { id: true, username: true, displayName: true } } } },
+        } as any,
+      });
+      messages.reverse(); // Return in ascending order (oldest first within the batch)
+    }
 
     // Filter out soft-deleted messages and vanished-seen messages
     const filtered = messages.filter((m: any) => {

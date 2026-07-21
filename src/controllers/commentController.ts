@@ -164,7 +164,7 @@ export const togglePinComment = async (req: AuthRequest, res: Response) => {
 
 // ─── Delete Comment ───
 export const deleteComment = async (req: AuthRequest, res: Response) => {
-  const { commentId } = req.params;
+  const commentId = req.params.commentId as string;
   const userId = req.user!.id;
 
   try {
@@ -186,13 +186,13 @@ export const deleteComment = async (req: AuthRequest, res: Response) => {
 
 // ─── Search Users for @mention ───
 export const searchMentionUsers = async (req: AuthRequest, res: Response) => {
-  const { q } = req.query;
-  if (!q || (q as string).length < 1) return res.status(200).json([]);
+  const q = req.query.q as string | undefined;
+  if (!q || q.length < 1) return res.status(200).json([]);
 
   try {
     const users = await prisma.user.findMany({
       where: {
-        username: { contains: q as string, mode: 'insensitive' },
+        username: { contains: q, mode: 'insensitive' },
       },
       select: { id: true, username: true, displayName: true, profilePicture: true },
       take: 10,

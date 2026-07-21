@@ -76,6 +76,7 @@ model User {
    vibeSessionsAs1  VibeSession[] @relation("VibeUser1")
    vibeSessionsAs2  VibeSession[] @relation("VibeUser2")
    vibeUsages       VibeUsage[]   @relation("VibeUsageUser")
+   commentLikes     CommentLike[]
 }
 
 model Post {
@@ -169,10 +170,28 @@ model Comment {
   userId         String
   postId         String
   text           String
+  type           String    @default("text") // "text" | "gif"
+  parentId       String?   // For nested replies
+  isPinned       Boolean   @default(false)
   createdAt      DateTime  @default(now())
 
   user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   post           Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  parent         Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies        Comment[] @relation("CommentReplies")
+  likes          CommentLike[]
+}
+
+model CommentLike {
+  id             String    @id @default(uuid())
+  userId         String
+  commentId      String
+  createdAt      DateTime  @default(now())
+
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comment        Comment   @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, commentId])
 }
 
 model Story {

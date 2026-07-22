@@ -165,40 +165,34 @@ export const getReels = async (req: AuthRequest, res: Response) => {
 
   try {
     const take = parseInt(limit as string);
+    const userId = req.user!.id;
 
-    const blocks = await prisma.block.findMany({
-      where: { OR: [{ blockerId: req.user!.id }, { blockedId: req.user!.id }] },
-      select: { blockerId: true, blockedId: true },
-    });
-    const blockedIds = blocks.map(b => b.blockerId === req.user!.id ? b.blockedId : b.blockerId);
+    // Use recommendation algorithm
+    const { getRecommendedReels, getColdStartReels } = await import('../services/reelsAlgorithm');
 
-    const reels = await (prisma.post as any).findMany({
-      where: { type: 'reel', userId: { not: req.user!.id, notIn: blockedIds }, isScheduled: false, visibility: { in: ['public', 'close_friends'] } },
-      take: take * 2,
-      ...(cursor ? { skip: 1, cursor: { id: cursor as string } } : {}),
-      orderBy: { createdAt: 'desc' },
-      include: {
-        user: { select: { id: true, username: true, displayName: true, profilePicture: true, isVerified: true, closeFriends: true } },
-        collabUser: { select: { id: true, username: true, displayName: true, profilePicture: true } },
-        likes: { select: { userId: true } },
-        comments: { include: { user: { select: { username: true, profilePicture: true } } } }
-      }
-    });
+    // Check if user has any interaction history (for cold start detection)
+    const userLikeCount = await prisma.like.count({ where: { userId } });
+    const userViewCount = await (prisma as any).postView.count({ where: { userId } });
 
-    const filteredReels = reels.filter((r: any) => {
-      if (r.visibility === 'close_friends') {
-        return r.user.closeFriends?.includes(req.user!.id);
-      }
-      return true;
-    }).slice(0, take);
-
-    const nextCursor = filteredReels.length === take ? filteredReels[filteredReels.length - 1].id : null;
+    let result;
+    if (userLikeCount < 3 && userViewCount < 10) {
+      // Cold start — new user with no history
+      result = await getColdStartReels(userId, take);
+    } else {
+      // Full algorithm
+      result = await getRecommendedReels({
+        userId,
+        limit: take,
+        cursor: cursor as string || undefined,
+      });
+    }
 
     res.status(200).json({
-      reels: filteredReels,
-      nextCursor
+      reels: result.reels,
+      nextCursor: result.nextCursor,
     });
   } catch (error: any) {
+    console.error('getReels algorithm error:', error);
     res.status(500).json({ error: error.message });
   }
 };

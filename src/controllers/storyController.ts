@@ -392,7 +392,9 @@ export const reactToStory = async (req: any, res: any) => {
       return res.status(404).json({ error: "Story not found" });
     }
 
-    if (story.expiresAt < new Date()) {
+    // Allow reactions from highlights even if story expired
+    const fromHighlight = req.body.fromHighlight === true;
+    if (story.expiresAt < new Date() && !fromHighlight) {
       return res.status(410).json({ error: "Story has expired" });
     }
 

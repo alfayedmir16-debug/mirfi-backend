@@ -1,24 +1,33 @@
 import { prisma } from '../db';
+import { randomUUID } from 'crypto';
 
 // ─── Get highlights for a user's profile ───
 export const getUserHighlights = async (req: any, res: any) => {
   const { userId } = req.params;
 
   try {
-    const highlights = await (prisma as any).storyHighlight.findMany({
-      where: { userId },
-      include: {
-        items: {
-          orderBy: { position: 'asc' },
-          take: 1, // just first item for cover fallback
-        },
-        _count: { select: { items: true } },
-      },
-      orderBy: { position: 'asc' },
-    });
+    const highlights: any[] = await prisma.$queryRaw`
+      SELECT h.*, 
+        (SELECT COUNT(*)::int FROM "StoryHighlightItem" WHERE "highlightId" = h.id) as "itemCount"
+      FROM "StoryHighlight" h
+      WHERE h."userId" = ${userId}
+      ORDER BY h.position ASC
+    `;
+
+    // Get first item (cover) for each highlight
+    for (const h of highlights) {
+      const items: any[] = await prisma.$queryRaw`
+        SELECT * FROM "StoryHighlightItem" 
+        WHERE "highlightId" = ${h.id} 
+        ORDER BY position ASC LIMIT 1
+      `;
+      h.items = items;
+      h._count = { items: h.itemCount };
+    }
 
     res.json(highlights);
   } catch (e: any) {
+    console.error('getUserHighlights error:', e);
     res.status(500).json({ error: e.message });
   }
 };
@@ -28,17 +37,30 @@ export const getHighlightDetail = async (req: any, res: any) => {
   const { highlightId } = req.params;
 
   try {
-    const highlight = await (prisma as any).storyHighlight.findUnique({
-      where: { id: highlightId },
-      include: {
-        items: { orderBy: { position: 'asc' } },
-        user: { select: { id: true, username: true, profilePicture: true } },
-      },
-    });
+    const highlights: any[] = await prisma.$queryRaw`
+      SELECT h.*, u.id as "user_id", u.username as "user_username", u."profilePicture" as "user_profilePicture"
+      FROM "StoryHighlight" h
+      JOIN "User" u ON u.id = h."userId"
+      WHERE h.id = ${highlightId}
+      LIMIT 1
+    `;
 
-    if (!highlight) return res.status(404).json({ error: 'Highlight not found' });
-    res.json(highlight);
+    if (highlights.length === 0) return res.status(404).json({ error: 'Highlight not found' });
+
+    const highlight = highlights[0];
+    const items: any[] = await prisma.$queryRaw`
+      SELECT * FROM "StoryHighlightItem" 
+      WHERE "highlightId" = ${highlightId} 
+      ORDER BY position ASC
+    `;
+
+    res.json({
+      ...highlight,
+      items,
+      user: { id: highlight.user_id, username: highlight.user_username, profilePicture: highlight.user_profilePicture },
+    });
   } catch (e: any) {
+    console.error('getHighlightDetail error:', e);
     res.status(500).json({ error: e.message });
   }
 };
@@ -52,48 +74,54 @@ export const createHighlight = async (req: any, res: any) => {
 
   try {
     // Get max position
-    const lastHighlight = await (prisma as any).storyHighlight.findFirst({
-      where: { userId },
-      orderBy: { position: 'desc' },
-    });
-    const nextPosition = (lastHighlight?.position || 0) + 1;
+    const posResult: any[] = await prisma.$queryRaw`
+      SELECT COALESCE(MAX(position), 0) as "maxPos" 
+      FROM "StoryHighlight" 
+      WHERE "userId" = ${userId}
+    `;
+    const nextPosition = (posResult[0]?.maxPos || 0) + 1;
 
     // Create highlight
-    const highlight = await (prisma as any).storyHighlight.create({
-      data: {
-        userId,
-        title,
-        coverUrl: coverUrl || null,
-        position: nextPosition,
-      },
-    });
+    const highlightId = randomUUID();
+    await prisma.$executeRaw`
+      INSERT INTO "StoryHighlight" (id, "userId", title, "coverUrl", position, "createdAt", "updatedAt")
+      VALUES (${highlightId}, ${userId}, ${title}, ${coverUrl || null}, ${nextPosition}, NOW(), NOW())
+    `;
 
     // Add stories as items
     if (storyIds && Array.isArray(storyIds) && storyIds.length > 0) {
-      // Fetch stories to get their media URLs
       const stories = await prisma.story.findMany({
         where: { id: { in: storyIds }, userId },
         select: { id: true, mediaUrl: true },
       });
 
-      const items = stories.map((story, index) => ({
-        highlightId: highlight.id,
-        storyId: story.id,
-        mediaUrl: story.mediaUrl,
-        position: index,
-      }));
-
-      await (prisma as any).storyHighlightItem.createMany({ data: items });
+      for (let i = 0; i < stories.length; i++) {
+        const itemId = randomUUID();
+        await prisma.$executeRaw`
+          INSERT INTO "StoryHighlightItem" (id, "highlightId", "storyId", "mediaUrl", position, "createdAt")
+          VALUES (${itemId}, ${highlightId}, ${stories[i].id}, ${stories[i].mediaUrl}, ${i}, NOW())
+        `;
+      }
     }
 
-    // Return with items
-    const result = await (prisma as any).storyHighlight.findUnique({
-      where: { id: highlight.id },
-      include: { items: { orderBy: { position: 'asc' } }, _count: { select: { items: true } } },
-    });
+    // Return created highlight with items
+    const items: any[] = await prisma.$queryRaw`
+      SELECT * FROM "StoryHighlightItem" 
+      WHERE "highlightId" = ${highlightId} 
+      ORDER BY position ASC
+    `;
 
-    res.status(201).json(result);
+    res.status(201).json({
+      id: highlightId,
+      userId,
+      title,
+      coverUrl: coverUrl || null,
+      position: nextPosition,
+      items,
+      _count: { items: items.length },
+    });
   } catch (e: any) {
+    console.error('createHighlight error:', e);
     res.status(500).json({ error: e.message });
   }
 };
@@ -105,21 +133,28 @@ export const updateHighlight = async (req: any, res: any) => {
   const { title, coverUrl } = req.body;
 
   try {
-    const highlight = await (prisma as any).storyHighlight.findUnique({ where: { id: highlightId } });
-    if (!highlight) return res.status(404).json({ error: 'Not found' });
-    if (highlight.userId !== userId) return res.status(403).json({ error: 'Forbidden' });
+    const highlights: any[] = await prisma.$queryRaw`
+      SELECT * FROM "StoryHighlight" WHERE id = ${highlightId} LIMIT 1
+    `;
+    if (highlights.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (highlights[0].userId !== userId) return res.status(403).json({ error: 'Forbidden' });
 
-    const updated = await (prisma as any).storyHighlight.update({
-      where: { id: highlightId },
-      data: {
-        ...(title !== undefined ? { title } : {}),
-        ...(coverUrl !== undefined ? { coverUrl } : {}),
-      },
-      include: { items: { orderBy: { position: 'asc' } } },
-    });
+    const newTitle = title !== undefined ? title : highlights[0].title;
+    const newCover = coverUrl !== undefined ? coverUrl : highlights[0].coverUrl;
 
-    res.json(updated);
+    await prisma.$executeRaw`
+      UPDATE "StoryHighlight" 
+      SET title = ${newTitle}, "coverUrl" = ${newCover}, "updatedAt" = NOW()
+      WHERE id = ${highlightId}
+    `;
+
+    const items: any[] = await prisma.$queryRaw`
+      SELECT * FROM "StoryHighlightItem" WHERE "highlightId" = ${highlightId} ORDER BY position ASC
+    `;
+
+    res.json({ ...highlights[0], title: newTitle, coverUrl: newCover, items });
   } catch (e: any) {
+    console.error('updateHighlight error:', e);
     res.status(500).json({ error: e.message });
   }
 };
@@ -130,13 +165,19 @@ export const deleteHighlight = async (req: any, res: any) => {
   const { highlightId } = req.params;
 
   try {
-    const highlight = await (prisma as any).storyHighlight.findUnique({ where: { id: highlightId } });
-    if (!highlight) return res.status(404).json({ error: 'Not found' });
-    if (highlight.userId !== userId) return res.status(403).json({ error: 'Forbidden' });
+    const highlights: any[] = await prisma.$queryRaw`
+      SELECT * FROM "StoryHighlight" WHERE id = ${highlightId} LIMIT 1
+    `;
+    if (highlights.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (highlights[0].userId !== userId) return res.status(403).json({ error: 'Forbidden' });
 
-    await (prisma as any).storyHighlight.delete({ where: { id: highlightId } });
+    // Delete items first (cascade should handle it, but explicit is safer)
+    await prisma.$executeRaw`DELETE FROM "StoryHighlightItem" WHERE "highlightId" = ${highlightId}`;
+    await prisma.$executeRaw`DELETE FROM "StoryHighlight" WHERE id = ${highlightId}`;
+
     res.json({ success: true });
   } catch (e: any) {
+    console.error('deleteHighlight error:', e);
     res.status(500).json({ error: e.message });
   }
 };
@@ -148,48 +189,56 @@ export const addToHighlight = async (req: any, res: any) => {
   const { storyIds, mediaUrls } = req.body;
 
   try {
-    const highlight = await (prisma as any).storyHighlight.findUnique({ where: { id: highlightId } });
-    if (!highlight) return res.status(404).json({ error: 'Not found' });
-    if (highlight.userId !== userId) return res.status(403).json({ error: 'Forbidden' });
+    const highlights: any[] = await prisma.$queryRaw`
+      SELECT * FROM "StoryHighlight" WHERE id = ${highlightId} LIMIT 1
+    `;
+    if (highlights.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (highlights[0].userId !== userId) return res.status(403).json({ error: 'Forbidden' });
 
-    // Get max position in this highlight
-    const lastItem = await (prisma as any).storyHighlightItem.findFirst({
-      where: { highlightId },
-      orderBy: { position: 'desc' },
-    });
-    let nextPos = (lastItem?.position || 0) + 1;
+    // Get max position
+    const posResult: any[] = await prisma.$queryRaw`
+      SELECT COALESCE(MAX(position), 0) as "maxPos" 
+      FROM "StoryHighlightItem" 
+      WHERE "highlightId" = ${highlightId}
+    `;
+    let nextPos = (posResult[0]?.maxPos || 0) + 1;
 
-    const items: any[] = [];
-
-    // Add from story IDs (copies media URL from story)
+    // Add from story IDs
     if (storyIds && Array.isArray(storyIds)) {
       const stories = await prisma.story.findMany({
         where: { id: { in: storyIds }, userId },
         select: { id: true, mediaUrl: true },
       });
       for (const story of stories) {
-        items.push({ highlightId, storyId: story.id, mediaUrl: story.mediaUrl, position: nextPos++ });
+        const itemId = randomUUID();
+        await prisma.$executeRaw`
+          INSERT INTO "StoryHighlightItem" (id, "highlightId", "storyId", "mediaUrl", position, "createdAt")
+          VALUES (${itemId}, ${highlightId}, ${story.id}, ${story.mediaUrl}, ${nextPos}, NOW())
+        `;
+        nextPos++;
       }
     }
 
     // Add from direct media URLs (for archived stories)
     if (mediaUrls && Array.isArray(mediaUrls)) {
       for (const url of mediaUrls) {
-        items.push({ highlightId, storyId: null, mediaUrl: url, position: nextPos++ });
+        const itemId = randomUUID();
+        await prisma.$executeRaw`
+          INSERT INTO "StoryHighlightItem" (id, "highlightId", "storyId", "mediaUrl", position, "createdAt")
+          VALUES (${itemId}, ${highlightId}, ${null}, ${url}, ${nextPos}, NOW())
+        `;
+        nextPos++;
       }
     }
 
-    if (items.length > 0) {
-      await (prisma as any).storyHighlightItem.createMany({ data: items });
-    }
+    // Return updated highlight
+    const items: any[] = await prisma.$queryRaw`
+      SELECT * FROM "StoryHighlightItem" WHERE "highlightId" = ${highlightId} ORDER BY position ASC
+    `;
 
-    const updated = await (prisma as any).storyHighlight.findUnique({
-      where: { id: highlightId },
-      include: { items: { orderBy: { position: 'asc' } }, _count: { select: { items: true } } },
-    });
-
-    res.json(updated);
+    res.json({ ...highlights[0], items, _count: { items: items.length } });
   } catch (e: any) {
+    console.error('addToHighlight error:', e);
     res.status(500).json({ error: e.message });
   }
 };
@@ -200,13 +249,16 @@ export const removeFromHighlight = async (req: any, res: any) => {
   const { highlightId, itemId } = req.params;
 
   try {
-    const highlight = await (prisma as any).storyHighlight.findUnique({ where: { id: highlightId } });
-    if (!highlight) return res.status(404).json({ error: 'Not found' });
-    if (highlight.userId !== userId) return res.status(403).json({ error: 'Forbidden' });
+    const highlights: any[] = await prisma.$queryRaw`
+      SELECT * FROM "StoryHighlight" WHERE id = ${highlightId} LIMIT 1
+    `;
+    if (highlights.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (highlights[0].userId !== userId) return res.status(403).json({ error: 'Forbidden' });
 
-    await (prisma as any).storyHighlightItem.delete({ where: { id: itemId } });
+    await prisma.$executeRaw`DELETE FROM "StoryHighlightItem" WHERE id = ${itemId}`;
     res.json({ success: true });
   } catch (e: any) {
+    console.error('removeFromHighlight error:', e);
     res.status(500).json({ error: e.message });
   }
 };

@@ -52,6 +52,7 @@ model User {
   storyReactions StoryReaction[]
   storyComments  StoryComment[]
   storyPollVotes StoryPollVote[]
+  storyHighlights StoryHighlight[]
   groupMembers   GroupMember[]
   groupMessages  GroupMessage[] @relation("GroupMessageSender")
   groupMessageReactions GroupMessageReaction[]
@@ -674,4 +675,33 @@ model AppConfig {
   value     String   // JSON string with config values
   updatedAt DateTime @updatedAt
   createdAt DateTime @default(now())
+}
+
+// ── Story Highlights ──
+model StoryHighlight {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  coverUrl  String?
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items StoryHighlightItem[]
+
+  @@index([userId])
+}
+
+model StoryHighlightItem {
+  id          String   @id @default(uuid())
+  highlightId String
+  storyId     String?
+  mediaUrl    String
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  highlight StoryHighlight @relation(fields: [highlightId], references: [id], onDelete: Cascade)
+
+  @@index([highlightId])
 }

@@ -28,8 +28,13 @@ const AVATARS = [
   'https://api.dicebear.com/7.x/adventurer/svg?seed=echo',
 ];
 
-const REEL_CATEGORIES = ['entertainment', 'education', 'music', 'dance'];
-const IMAGE_CATEGORIES = ['travel', 'food', 'lifestyle'];
+const REEL_CATEGORIES = [
+  'entertainment', 'education', 'music', 'dance', 'comedy', 
+  'sports', 'tech', 'art', 'food', 'travel', 'fashion', 
+  'gaming', 'fitness', 'beauty', 'news', 'lifestyle',
+  'photography', 'nature', 'automotive', 'diy',
+];
+const IMAGE_CATEGORIES = ['travel', 'food', 'lifestyle', 'photography', 'nature', 'art', 'fashion'];
 
 const CAPTIONS = [
   'Living my best life! #lifestyle',

@@ -16,11 +16,12 @@ import { prisma } from '../db';
 
 // ─── Weight Configuration ───
 const WEIGHTS = {
-  engagement: 0.30,      // 30% — likes, comments, saves, shares
-  watchTime: 0.25,       // 25% — avg watch duration / completion rate
-  trending: 0.20,        // 20% — velocity of engagement in last few hours
-  affinity: 0.15,        // 15% — viewer's history with this creator
+  engagement: 0.20,      // 20% — likes, comments, saves, shares
+  watchTime: 0.15,       // 15% — avg watch duration / completion rate
+  trending: 0.10,        // 10% — velocity of engagement in last few hours
+  affinity: 0.10,        // 10% — viewer's history with this creator
   freshness: 0.10,       // 10% — time decay
+  contentPreference: 0.35, // 35% — user's content taste (categories, hashtags, creators they engage with most)
 };
 
 // Engagement sub-weights
@@ -61,16 +62,20 @@ function calcEngagementScore(reel: any): number {
 /**
  * Calculate watch time score (0-100)
  * Higher if people watch the full reel / re-watch
+ * Uses the max watch duration across all viewers as a proxy for video length
  */
-function calcWatchTimeScore(avgWatchDuration: number, totalViews: number): number {
+function calcWatchTimeScore(avgWatchDuration: number, totalViews: number, maxWatchDuration?: number): number {
   if (totalViews === 0) return 50; // No data = neutral score
   
-  // Assume typical reel is 15 seconds
-  // If avg watch > 10s = great, > 5s = good, < 3s = poor
-  const completionEstimate = Math.min(avgWatchDuration / 15, 2); // Cap at 2x (rewatches)
+  // Use max watch duration as proxy for actual video length (someone likely watched it fully)
+  // Fallback to 15s if no data available
+  const estimatedLength = maxWatchDuration && maxWatchDuration > 3 ? maxWatchDuration : 15;
   
-  // Scale: 0 watch = 0, 15s = 70, 30s (rewatch) = 100
-  return Math.min(completionEstimate * 50, 100);
+  // Completion rate: how much of the video do people watch on average?
+  const completionRate = Math.min(avgWatchDuration / estimatedLength, 2); // Cap at 2x (rewatches)
+  
+  // Scale: 0 watch = 0, full watch = 70, rewatch = 100
+  return Math.min(completionRate * 50, 100);
 }
 
 /**
@@ -123,6 +128,57 @@ function calcFreshnessScore(ageHours: number): number {
   return 100 * Math.exp(-decayRate * ageHours);
 }
 
+/**
+ * Calculate content preference score (0-100)
+ * HEAVILY weighted toward categories the user watches most.
+ * The more a user watches a specific category, the higher reels from that category score.
+ * 
+ * Scoring breakdown (out of 100):
+ * - Category match: up to 60 points (dominant signal)
+ * - Top creator match: up to 20 points
+ * - Hashtag match: up to 20 points
+ */
+function calcContentPreferenceScore(
+  reel: any,
+  userCategoryPrefs: Record<string, number>,  // category -> weighted watch count
+  userTopCreators: Set<string>,                // creator IDs user engages with most
+  userHashtagPrefs: Record<string, number>,    // hashtag -> weighted engagement count
+): number {
+  let score = 0;
+
+  // Category match — PRIMARY signal (up to 60 points)
+  const category = (reel.category || '').toLowerCase();
+  if (category && userCategoryPrefs[category]) {
+    // Find the max category score to normalize
+    const maxCategoryScore = Math.max(...Object.values(userCategoryPrefs), 1);
+    // Normalize this category's score relative to the user's top category (0 to 1)
+    const categoryStrength = userCategoryPrefs[category] / maxCategoryScore;
+    // Scale: top category = 60, second = proportional
+    score += categoryStrength * 60;
+  }
+
+  // Top creator match (up to 20 points)
+  if (userTopCreators.has(reel.userId)) {
+    score += 20;
+  }
+
+  // Hashtag match (up to 20 points)
+  const caption = (reel.caption || '').toLowerCase();
+  const hashtags = caption.match(/#(\w+)/g) || [];
+  let hashtagScore = 0;
+  const maxHashtagPref = Math.max(...Object.values(userHashtagPrefs), 1);
+  for (const tag of hashtags) {
+    const cleanTag = tag.replace('#', '');
+    if (userHashtagPrefs[cleanTag]) {
+      const tagStrength = userHashtagPrefs[cleanTag] / maxHashtagPref;
+      hashtagScore += tagStrength * 8;
+    }
+  }
+  score += Math.min(hashtagScore, 20);
+
+  return Math.min(score, 100);
+}
+
 // ─── Main Algorithm ───
 
 interface AlgorithmInput {
@@ -141,6 +197,7 @@ interface ScoredReel {
     trending: number;
     affinity: number;
     freshness: number;
+    contentPreference: number;
   };
 }
 
@@ -171,6 +228,87 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
   });
   const userLikedPostIds = new Set(userLikes.map(l => l.postId));
 
+  // 3b. Build user's content taste profile — WATCH HISTORY is the PRIMARY signal
+  // The more a user watches a category, the more reels from that category they see
+
+  // Fetch ALL views by this user (last 30 days) — this is the main preference signal
+  const allUserViews = await (prisma as any).postView.findMany({
+    where: { userId, createdAt: { gte: thirtyDaysAgo } },
+    select: { postId: true, watchDuration: true },
+    orderBy: { createdAt: 'desc' },
+    take: 500, // Last 500 views for taste profiling
+  });
+
+  // Get post details for all viewed reels
+  const viewedPostIds = allUserViews.map((v: any) => v.postId);
+  const viewedPosts = await (prisma.post as any).findMany({
+    where: { id: { in: viewedPostIds }, type: 'reel' },
+    select: { id: true, userId: true, category: true, caption: true },
+  });
+
+  // Build a map of postId → watchDuration for weighted scoring
+  const watchDurationMap: Record<string, number> = {};
+  allUserViews.forEach((v: any) => {
+    watchDurationMap[v.postId] = v.watchDuration || 1;
+  });
+
+  // Category preferences — weighted by watch duration (longer watch = stronger signal)
+  const userCategoryPrefs: Record<string, number> = {};
+  viewedPosts.forEach((p: any) => {
+    const cat = (p.category || '').toLowerCase();
+    if (cat) {
+      const duration = watchDurationMap[p.id] || 1;
+      // Weight: short watch (<3s) = 0.5, normal (3-10s) = 1.0, long (>10s) = 2.0
+      const watchWeight = duration < 3 ? 0.5 : duration > 10 ? 2.0 : 1.0;
+      userCategoryPrefs[cat] = (userCategoryPrefs[cat] || 0) + watchWeight;
+    }
+  });
+
+  // Also add likes as a bonus signal (like = strong preference indicator)
+  const likedPosts = await (prisma.post as any).findMany({
+    where: { id: { in: userLikes.map(l => l.postId) }, type: 'reel' },
+    select: { userId: true, category: true, caption: true },
+  });
+  likedPosts.forEach((p: any) => {
+    const cat = (p.category || '').toLowerCase();
+    if (cat) userCategoryPrefs[cat] = (userCategoryPrefs[cat] || 0) + 3; // Like = 3x weight boost
+  });
+
+  // Top creators (creators user engages with most — top 20)
+  const creatorEngagement: Record<string, number> = {};
+  viewedPosts.forEach((p: any) => {
+    const duration = watchDurationMap[p.id] || 1;
+    const watchWeight = duration < 3 ? 0.3 : duration > 10 ? 1.5 : 1.0;
+    creatorEngagement[p.userId] = (creatorEngagement[p.userId] || 0) + watchWeight;
+  });
+  likedPosts.forEach((p: any) => {
+    creatorEngagement[p.userId] = (creatorEngagement[p.userId] || 0) + 2;
+  });
+  const userTopCreators = new Set(
+    Object.entries(creatorEngagement)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([id]) => id)
+  );
+
+  // Hashtag preferences — also watch-based
+  const userHashtagPrefs: Record<string, number> = {};
+  viewedPosts.forEach((p: any) => {
+    const duration = watchDurationMap[p.id] || 1;
+    const watchWeight = duration < 3 ? 0.3 : duration > 10 ? 1.5 : 1.0;
+    const tags = ((p.caption || '').match(/#(\w+)/g) || []).map((t: string) => t.replace('#', '').toLowerCase());
+    tags.forEach((tag: string) => { userHashtagPrefs[tag] = (userHashtagPrefs[tag] || 0) + watchWeight; });
+  });
+  likedPosts.forEach((p: any) => {
+    const tags = ((p.caption || '').match(/#(\w+)/g) || []).map((t: string) => t.replace('#', '').toLowerCase());
+    tags.forEach((tag: string) => { userHashtagPrefs[tag] = (userHashtagPrefs[tag] || 0) + 2; });
+  });
+
+  // Determine user's top category (most watched) for priority boost later
+  const sortedCategories = Object.entries(userCategoryPrefs).sort((a, b) => b[1] - a[1]);
+  const userTopCategory = sortedCategories.length > 0 ? sortedCategories[0][0] : null;
+  const userTop3Categories = new Set(sortedCategories.slice(0, 3).map(([cat]) => cat));
+
   // 4. Fetch candidate reels (larger pool for scoring)
   const candidateCount = Math.max(limit * 8, 40); // Fetch 8x more than needed for ranking
   
@@ -189,7 +327,7 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
     include: {
       user: { select: { id: true, username: true, displayName: true, profilePicture: true, isVerified: true, closeFriends: true } },
       collabUser: { select: { id: true, username: true, displayName: true, profilePicture: true } },
-      likes: { select: { userId: true } },
+      likes: { select: { userId: true, createdAt: true } },
       comments: { select: { id: true } },
       postViews: {
         select: { watchDuration: true, userId: true, createdAt: true },
@@ -222,6 +360,17 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
     likesPerCreator[cid] = (likesPerCreator[cid] || 0) + 1;
   });
 
+  // Get comments by user on these creators' posts (for affinity)
+  const userCommentsOnCreators = await (prisma.comment as any).findMany({
+    where: { userId, post: { userId: { in: creatorIds as string[] } } },
+    select: { post: { select: { userId: true } } },
+  });
+  const commentsPerCreator: Record<string, number> = {};
+  userCommentsOnCreators.forEach((c: any) => {
+    const cid = c.post.userId;
+    commentsPerCreator[cid] = (commentsPerCreator[cid] || 0) + 1;
+  });
+
   // Get creator post counts (for new creator boost)
   const creatorPostCounts = await (prisma.post as any).groupBy({
     by: ['userId'],
@@ -246,26 +395,40 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
     const avgWatch = watchDurations.length > 0
       ? watchDurations.reduce((a: number, b: number) => a + b, 0) / watchDurations.length
       : 5; // Default 5s if no data
-    const watchTimeScore = calcWatchTimeScore(avgWatch, reel._count?.postViews || 0);
+    const maxWatch = watchDurations.length > 0 ? Math.max(...watchDurations) : undefined;
+    const watchTimeScore = calcWatchTimeScore(avgWatch, reel._count?.postViews || 0, maxWatch);
 
     // Trending — count recent engagement (last 6h)
     const recentViews = (reel.postViews || []).filter((v: any) => new Date(v.createdAt) >= sixHoursAgo).length;
-    const recentLikes = (reel.likes || []).length; // Simplified — ideally filter by time
+    // Filter likes by createdAt if available, otherwise estimate from total
+    const recentLikes = (reel.likes || []).filter((l: any) => l.createdAt ? new Date(l.createdAt) >= sixHoursAgo : false).length || Math.ceil((reel._count?.likes || 0) * Math.min(6 / Math.max(ageHours, 1), 1));
     const trendingScore = calcTrendingScore(recentLikes, recentViews, ageHours);
 
     // Affinity
     const isFollowing = followingIds.includes(reel.userId);
     const likedCount = likesPerCreator[reel.userId] || 0;
+    const commentedCount = commentsPerCreator[reel.userId] || 0;
     const viewedCount = (reel.postViews || []).filter((v: any) => v.userId === userId).length;
-    const affinityScore = calcAffinityScore(isFollowing, likedCount, 0, viewedCount);
+    const affinityScore = calcAffinityScore(isFollowing, likedCount, commentedCount, viewedCount);
 
     // Freshness
     const freshnessScore = calcFreshnessScore(ageHours);
 
+    // Content Preference — does this reel match user's taste?
+    const contentPrefScore = calcContentPreferenceScore(reel, userCategoryPrefs, userTopCreators, userHashtagPrefs);
+
     // ─── Bonus Multipliers ───
     let bonusMultiplier = 1.0;
 
-    // New creator boost (< 5 reels = 1.5x)
+    // ★ TOP CATEGORY BOOST — user's most-watched categories always surface first
+    const reelCategory = (reel.category || '').toLowerCase();
+    if (reelCategory && userTopCategory && reelCategory === userTopCategory) {
+      bonusMultiplier *= 1.8; // #1 most-watched category = 1.8x boost
+    } else if (reelCategory && userTop3Categories.has(reelCategory)) {
+      bonusMultiplier *= 1.4; // Top 3 categories = 1.4x boost
+    }
+
+    // New creator boost (< 5 reels = 1.4x)
     const creatorReelCount = postCountMap[reel.userId] || 0;
     if (creatorReelCount <= 5) bonusMultiplier *= 1.4;
 
@@ -282,7 +445,8 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
       (watchTimeScore * WEIGHTS.watchTime) +
       (trendingScore * WEIGHTS.trending) +
       (affinityScore * WEIGHTS.affinity) +
-      (freshnessScore * WEIGHTS.freshness);
+      (freshnessScore * WEIGHTS.freshness) +
+      (contentPrefScore * WEIGHTS.contentPreference);
 
     const finalScore = rawScore * bonusMultiplier;
 
@@ -295,6 +459,7 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
         trending: trendingScore,
         affinity: affinityScore,
         freshness: freshnessScore,
+        contentPreference: contentPrefScore,
       },
     };
   });
@@ -332,8 +497,20 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
   }
 
   // 11. Add small randomness to top results (avoid stale feed feeling)
-  // Shuffle positions slightly within score tiers
-  const finalReels = diversifiedReels.slice(0, limit).map(s => s.reel);
+  // Shuffle positions slightly within similar score tiers (±10% score range)
+  const sliced = diversifiedReels.slice(0, limit);
+  for (let i = 0; i < sliced.length - 1; i++) {
+    const current = sliced[i];
+    const next = sliced[i + 1];
+    // If two adjacent reels have similar scores (within 15%), randomly swap
+    if (current.score > 0 && next.score / current.score > 0.85) {
+      if (Math.random() > 0.6) {
+        sliced[i] = next;
+        sliced[i + 1] = current;
+      }
+    }
+  }
+  const finalReels = sliced.map(s => s.reel);
 
   // 12. Determine next cursor
   const lastReel = visibleCandidates[visibleCandidates.length - 1];

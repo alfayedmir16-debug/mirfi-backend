@@ -552,10 +552,6 @@ export const getStoryActivity = async (req: any, res: any) => {
       return res.status(404).json({ error: "Story not found" });
     }
 
-    if (story.expiresAt < new Date()) {
-      return res.status(410).json({ error: "Story has expired" });
-    }
-
     // Check if user owns this story
     if (story.userId !== userId) {
       return res.status(403).json({ error: "Unauthorized" });

@@ -18,6 +18,25 @@ router.post("/create", authenticateJWT as any, createStory as any);
 router.get("/feed", authenticateJWT as any, getStoryFeed as any);
 router.get("/user/:userId", authenticateJWT as any, getUserStories as any);
 
+// Get current user's reactions for a batch of stories (used by highlight viewer)
+router.post("/my-reactions", authenticateJWT as any, async (req: any, res: any) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const { storyIds } = req.body;
+    if (!storyIds || !Array.isArray(storyIds) || storyIds.length === 0) {
+      return res.json([]);
+    }
+    const { prisma } = await import('../db');
+    const reactions = await prisma.storyReaction.findMany({
+      where: { userId: req.user.id, storyId: { in: storyIds } },
+      select: { storyId: true, emoji: true },
+    });
+    res.json(reactions);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Story Archive — all user's stories (expired + active), paginated
 router.get("/archive", authenticateJWT as any, async (req: any, res: any) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });

@@ -345,7 +345,32 @@ export const searchUsers = async (req: any, res: any) => {
       take: 20,
     });
 
-    res.json(users);
+    // Also search reels by caption/category match
+    const reels = await (prisma.post as any).findMany({
+      where: {
+        type: 'reel',
+        userId: { notIn: [...blockedIds, loggedInUserId] },
+        isScheduled: false,
+        visibility: 'public',
+        OR: [
+          { caption: { contains: q, mode: 'insensitive' } },
+          { category: { contains: q, mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        mediaUrl: true,
+        thumbnailUrl: true,
+        caption: true,
+        category: true,
+        _count: { select: { likes: true, postViews: true } },
+        user: { select: { id: true, username: true, profilePicture: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 15,
+    });
+
+    res.json({ users, reels });
   } catch (e: any) {
     console.error("Search Users Error:", e);
     res.status(500).json({ error: e.message || "Failed to perform user search" });

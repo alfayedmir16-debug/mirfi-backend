@@ -263,6 +263,7 @@ export const toggleLike = async (req: AuthRequest, res: Response) => {
 export const getUserPosts = async (req: AuthRequest, res: Response) => {
   const userId = req.params.userId as string;
   const requesterId = req.user!.id;
+  const { limit = '12', cursor } = req.query;
 
   try {
     // Block check — either direction blocks access
@@ -275,9 +276,10 @@ export const getUserPosts = async (req: AuthRequest, res: Response) => {
           ],
         },
       });
-      if (block) return res.status(200).json([]);
+      if (block) return res.status(200).json({ posts: [], nextCursor: null });
     }
 
+    const take = Math.min(parseInt(limit as string) || 12, 30);
     const isOwner = userId === requesterId;
     const includeBlock = {
       user: { select: { id: true, username: true, displayName: true, profilePicture: true, isVerified: true } },
@@ -287,24 +289,20 @@ export const getUserPosts = async (req: AuthRequest, res: Response) => {
 
     const visibilityFilter = isOwner ? {} : { visibility: 'public', isScheduled: false };
 
-    // own posts
+    // own posts + collab posts combined with pagination
     const ownPosts = await (prisma.post as any).findMany({
       where: { userId, ...visibilityFilter },
       orderBy: { createdAt: 'desc' },
       include: includeBlock,
+      take: take + 1,
+      ...(cursor ? { skip: 1, cursor: { id: cursor as string } } : {}),
     });
-    // collab posts where this user accepted (only public for non-owners)
-    const collabPosts = await (prisma.post as any).findMany({
-      where: { collabUserId: userId, collabStatus: 'accepted', ...visibilityFilter },
-      orderBy: { createdAt: 'desc' },
-      include: includeBlock,
-    });
-    // merge + dedupe + sort
-    const seen = new Set<string>();
-    const all = [...ownPosts, ...collabPosts].filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
-    all.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    res.status(200).json(all);
+    const hasMore = ownPosts.length > take;
+    const results = hasMore ? ownPosts.slice(0, take) : ownPosts;
+    const nextCursor = hasMore ? results[results.length - 1].id : null;
+
+    res.status(200).json({ posts: results, nextCursor });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

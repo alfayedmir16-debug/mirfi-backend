@@ -14,22 +14,24 @@
 
 import { prisma } from '../db';
 
-// ─── Weight Configuration ───
+// ─── Weight Configuration (Instagram 2026 — confirmed by Adam Mosseri) ───
+// Top 3: Watch Time > Sends/Shares > Likes per Reach
 const WEIGHTS = {
-  engagement: 0.20,      // 20% — likes, comments, saves, shares
-  watchTime: 0.15,       // 15% — avg watch duration / completion rate
-  trending: 0.10,        // 10% — velocity of engagement in last few hours
-  affinity: 0.10,        // 10% — viewer's history with this creator
-  freshness: 0.10,       // 10% — time decay
-  contentPreference: 0.35, // 35% — user's content taste (categories, hashtags, creators they engage with most)
+  watchTime: 0.28,         // 28% — #1 signal: how long people watch
+  engagement: 0.22,        // 22% — likes per reach, comments, saves, DM shares
+  contentPreference: 0.20, // 20% — user's content taste (categories, hashtags, creators)
+  trending: 0.12,          // 12% — velocity of engagement in last few hours
+  affinity: 0.10,          // 10% — viewer's history with this creator
+  freshness: 0.08,         // 8% — time decay
 };
 
-// Engagement sub-weights
+// Engagement sub-weights (Instagram 2026: sends > saves > comments > likes)
 const ENGAGEMENT_WEIGHTS = {
-  like: 1.0,
+  send: 5.0,              // DM shares = strongest signal (Instagram's #2 ranking factor)
+  save: 4.0,             // Saves = very high value
   comment: 3.0,          // Comments = high intent
-  save: 4.0,             // Saves = highest value signal
-  share: 2.5,
+  share: 3.5,            // Public shares
+  like: 1.0,             // Likes = baseline (lowest weight now)
   view: 0.1,
 };
 
@@ -37,6 +39,8 @@ const ENGAGEMENT_WEIGHTS = {
 
 /**
  * Calculate engagement score for a reel (0-100 normalized)
+ * Instagram 2026: Uses "per reach" normalization — engagement relative to views, not absolute numbers
+ * A reel with 10 likes from 100 views (10% rate) beats 100 likes from 10,000 views (1% rate)
  */
 function calcEngagementScore(reel: any): number {
   const likes = reel._count?.likes || reel.likes?.length || 0;
@@ -45,37 +49,50 @@ function calcEngagementScore(reel: any): number {
   const views = reel._count?.postViews || reel.viewCount || 1;
   const shares = reel.shareCount || 0;
 
-  // Engagement rate = weighted actions / views
+  // Engagement rate = weighted actions / views (per-reach normalization)
   const weightedActions = 
     (likes * ENGAGEMENT_WEIGHTS.like) +
     (comments * ENGAGEMENT_WEIGHTS.comment) +
     (saves * ENGAGEMENT_WEIGHTS.save) +
-    (shares * ENGAGEMENT_WEIGHTS.share);
+    (shares * ENGAGEMENT_WEIGHTS.share) +
+    (shares * ENGAGEMENT_WEIGHTS.send); // shares also count as sends
 
-  // Normalize: engagement rate (actions per view), capped at 1
-  const engagementRate = Math.min(weightedActions / Math.max(views, 1), 1);
+  // Per-reach rate: actions per 100 views
+  const engagementRate = (weightedActions / Math.max(views, 1)) * 100;
   
-  // Scale to 0-100
-  return engagementRate * 100;
+  // Scale: 0-5% rate = 0-50 score, 5-15% = 50-80, 15%+ = 80-100
+  if (engagementRate <= 5) return engagementRate * 10;
+  if (engagementRate <= 15) return 50 + ((engagementRate - 5) * 3);
+  return Math.min(80 + ((engagementRate - 15) * 2), 100);
 }
 
 /**
  * Calculate watch time score (0-100)
- * Higher if people watch the full reel / re-watch
- * Uses the max watch duration across all viewers as a proxy for video length
+ * Instagram 2026: Watch time is THE #1 ranking signal.
+ * - 70-80% completion rate = significant boost
+ * - Full watch + rewatch = maximum score
+ * - Drop-off in first 3 seconds = strong negative signal
  */
 function calcWatchTimeScore(avgWatchDuration: number, totalViews: number, maxWatchDuration?: number): number {
-  if (totalViews === 0) return 50; // No data = neutral score
-  
-  // Use max watch duration as proxy for actual video length (someone likely watched it fully)
-  // Fallback to 15s if no data available
+  if (totalViews === 0) return 40; // No data = below neutral
+
+  // Use max watch duration as proxy for actual video length
   const estimatedLength = maxWatchDuration && maxWatchDuration > 3 ? maxWatchDuration : 15;
   
-  // Completion rate: how much of the video do people watch on average?
-  const completionRate = Math.min(avgWatchDuration / estimatedLength, 2); // Cap at 2x (rewatches)
+  // Completion rate
+  const completionRate = avgWatchDuration / estimatedLength;
   
-  // Scale: 0 watch = 0, full watch = 70, rewatch = 100
-  return Math.min(completionRate * 50, 100);
+  // Instagram scoring curve:
+  // < 25% completion = poor (0-20 score) — people skip it fast
+  // 25-50% = okay (20-45)
+  // 50-70% = good (45-65)
+  // 70-90% = great (65-85) — the "sweet spot" Instagram rewards heavily
+  // 90%+ = excellent (85-100) — full watch / rewatch
+  if (completionRate < 0.25) return completionRate * 80; // 0-20
+  if (completionRate < 0.50) return 20 + ((completionRate - 0.25) * 100); // 20-45
+  if (completionRate < 0.70) return 45 + ((completionRate - 0.50) * 100); // 45-65
+  if (completionRate < 0.90) return 65 + ((completionRate - 0.70) * 100); // 65-85
+  return Math.min(85 + ((completionRate - 0.90) * 150), 100); // 85-100
 }
 
 /**
@@ -417,27 +434,55 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
     // Content Preference — does this reel match user's taste?
     const contentPrefScore = calcContentPreferenceScore(reel, userCategoryPrefs, userTopCreators, userHashtagPrefs);
 
-    // ─── Bonus Multipliers ───
+    // ─── Bonus Multipliers (Instagram 2026) ───
     let bonusMultiplier = 1.0;
 
     // ★ TOP CATEGORY BOOST — user's most-watched categories always surface first
     const reelCategory = (reel.category || '').toLowerCase();
     if (reelCategory && userTopCategory && reelCategory === userTopCategory) {
-      bonusMultiplier *= 1.8; // #1 most-watched category = 1.8x boost
+      bonusMultiplier *= 1.6; // #1 most-watched category
     } else if (reelCategory && userTop3Categories.has(reelCategory)) {
-      bonusMultiplier *= 1.4; // Top 3 categories = 1.4x boost
+      bonusMultiplier *= 1.3; // Top 3 categories
     }
 
-    // New creator boost (< 5 reels = 1.4x)
+    // ★ SMALL CREATOR BOOST — Instagram gives new/small creators discovery push
     const creatorReelCount = postCountMap[reel.userId] || 0;
-    if (creatorReelCount <= 5) bonusMultiplier *= 1.4;
+    if (creatorReelCount <= 3) bonusMultiplier *= 1.6;       // Very new creator (≤3 reels) = 1.6x
+    else if (creatorReelCount <= 8) bonusMultiplier *= 1.3;  // Growing creator (4-8 reels) = 1.3x
 
+    // ★ COMPLETION RATE SUPER BOOST — Instagram 2026 heavily rewards 70%+ completion
+    const avgWatchForBoost = watchDurations.length > 0
+      ? watchDurations.reduce((a: number, b: number) => a + b, 0) / watchDurations.length : 5;
+    const estLength = maxWatch && maxWatch > 3 ? maxWatch : 15;
+    const completionForBoost = avgWatchForBoost / estLength;
+    if (completionForBoost >= 0.8) bonusMultiplier *= 1.4;      // 80%+ completion = big boost
+    else if (completionForBoost >= 0.7) bonusMultiplier *= 1.2; // 70%+ = moderate boost
+
+    // ★ HIGH SENDS/SHARES BOOST — DM shares = strongest engagement signal
+    const shareRate = (reel.shareCount || 0) / Math.max(reel._count?.postViews || 1, 1);
+    if (shareRate > 0.05) bonusMultiplier *= 1.5;       // 5%+ share rate = viral potential
+    else if (shareRate > 0.02) bonusMultiplier *= 1.2;  // 2%+ = good shareability
+
+    // ─── DEMOTION SIGNALS (Instagram 2026: reduce reach for low quality) ───
+    
     // Already viewed penalty (seen it before = lower priority)
     const userViewed = (reel.postViews || []).some((v: any) => v.userId === userId);
-    if (userViewed) bonusMultiplier *= 0.3; // Heavy penalty for already-seen
+    if (userViewed) bonusMultiplier *= 0.25; // Heavy penalty for already-seen
 
-    // Already liked = don't show again as high priority
-    if (userLikedPostIds.has(reel.id)) bonusMultiplier *= 0.2;
+    // Already liked = don't show again
+    if (userLikedPostIds.has(reel.id)) bonusMultiplier *= 0.15;
+
+    // SKIP SIGNAL — if average watch is < 3 seconds, people are skipping it
+    if (avgWatchForBoost < 3 && (reel._count?.postViews || 0) > 5) {
+      bonusMultiplier *= 0.5; // People skip this reel = demote
+    }
+
+    // LOW ENGAGEMENT RATE — if many views but almost no engagement = not interesting
+    const totalActions = (reel._count?.likes || 0) + (reel._count?.comments || 0) + (reel._count?.saves || 0);
+    const viewsForRate = reel._count?.postViews || 0;
+    if (viewsForRate > 20 && totalActions === 0) {
+      bonusMultiplier *= 0.6; // Many views but zero engagement = demote
+    }
 
     // Final weighted score
     const rawScore = 

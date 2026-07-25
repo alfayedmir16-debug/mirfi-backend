@@ -349,11 +349,14 @@ export const toggleSave = async (req: any, res: any) => {
   }
 };
 
-// Fetch all saved posts for logged-in user
+// Fetch saved posts for logged-in user (paginated)
 export const getSavedPosts = async (req: any, res: any) => {
   const userId = req.user.id;
+  const { limit = '12', cursor } = req.query;
 
   try {
+    const take = Math.min(parseInt(limit as string) || 12, 30);
+
     const saves = await prisma.save.findMany({
       where: {
         userId,
@@ -375,9 +378,18 @@ export const getSavedPosts = async (req: any, res: any) => {
       orderBy: {
         createdAt: "desc",
       },
+      take: take + 1, // fetch 1 extra to check if there's more
+      ...(cursor ? { skip: 1, cursor: { id: cursor as string } } : {}),
     });
 
-    res.status(200).json(saves.map(s => s.post));
+    const hasMore = saves.length > take;
+    const results = hasMore ? saves.slice(0, take) : saves;
+    const nextCursor = hasMore ? results[results.length - 1].id : null;
+
+    res.status(200).json({
+      posts: results.map(s => s.post),
+      nextCursor,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

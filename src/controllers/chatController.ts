@@ -838,7 +838,8 @@ export const blockUser = async (req: any, res: any) => {
       },
     });
 
-    // Delete any existing chat room between them
+    // Soft-hide the chat room (don't delete messages — preserve for unblock)
+    // Instagram behavior: messages stay, room is hidden, unblock restores access
     const room = await prisma.chatRoom.findFirst({
       where: {
         OR: [
@@ -848,8 +849,14 @@ export const blockUser = async (req: any, res: any) => {
       },
     });
     if (room) {
-      await prisma.message.deleteMany({ where: { roomId: room.id } });
-      await prisma.chatRoom.delete({ where: { id: room.id } });
+      // Mark room as "deleted" for both users (soft delete — messages preserved)
+      await prisma.chatRoom.update({
+        where: { id: room.id },
+        data: { 
+          deletedFor: [blockerId, blockedId],
+          deletedForAt: new Date(),
+        },
+      });
     }
 
     res.json(block);
@@ -900,6 +907,25 @@ export const unblockUser = async (req: any, res: any) => {
     await prisma.block.deleteMany({
       where: { blockerId, blockedId },
     });
+
+    // Restore soft-deleted chat room (if it was hidden during block)
+    const room = await prisma.chatRoom.findFirst({
+      where: {
+        OR: [
+          { user1Id: blockerId, user2Id: blockedId },
+          { user1Id: blockedId, user2Id: blockerId },
+        ],
+      },
+    });
+    if (room && (room.deletedFor || []).length > 0) {
+      await prisma.chatRoom.update({
+        where: { id: room.id },
+        data: { 
+          deletedFor: [],
+          deletedForAt: null,
+        },
+      });
+    }
 
     res.json({ success: true });
   } catch (e: any) {

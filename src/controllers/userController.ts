@@ -621,14 +621,14 @@ export const getUnreadNotificationCount = async (req: any, res: any) => {
 // Update push token
 export const updatePushToken = async (req: any, res: any) => {
   try {
-    const { pushToken } = req.body;
-    if (!pushToken) {
-      return res.status(400).json({ error: "pushToken is required" });
+    const { pushToken, fcmToken } = req.body;
+    if (!pushToken && !fcmToken) {
+      return res.status(400).json({ error: "pushToken or fcmToken is required" });
     }
 
     await prisma.user.update({
       where: { id: req.user.id },
-      data: { pushToken },
+      data: { pushToken: pushToken || fcmToken },
     });
 
     res.json({ success: true });

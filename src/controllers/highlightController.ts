@@ -90,16 +90,26 @@ export const createHighlight = async (req: any, res: any) => {
 
     // Add stories as items
     if (storyIds && Array.isArray(storyIds) && storyIds.length > 0) {
+      // Check which stories are already in ANY highlight (prevent duplicates across all highlights)
+      const alreadyHighlighted: any[] = await prisma.$queryRaw`
+        SELECT "storyId" FROM "StoryHighlightItem" 
+        WHERE "storyId" = ANY(${storyIds}::text[])
+      `;
+      const alreadySet = new Set(alreadyHighlighted.map((r: any) => r.storyId));
+
       const stories = await prisma.story.findMany({
-        where: { id: { in: storyIds }, userId },
+        where: { id: { in: storyIds.filter((sid: string) => !alreadySet.has(sid)) }, userId },
         select: { id: true, mediaUrl: true },
       });
 
-      for (let i = 0; i < stories.length; i++) {
+      // Max 50 items per highlight
+      const toAdd = stories.slice(0, 50);
+
+      for (let i = 0; i < toAdd.length; i++) {
         const itemId = randomUUID();
         await prisma.$executeRaw`
           INSERT INTO "StoryHighlightItem" (id, "highlightId", "storyId", "mediaUrl", position, "createdAt")
-          VALUES (${itemId}, ${highlightId}, ${stories[i].id}, ${stories[i].mediaUrl}, ${i}, NOW())
+          VALUES (${itemId}, ${highlightId}, ${toAdd[i].id}, ${toAdd[i].mediaUrl}, ${i}, NOW())
         `;
       }
     }
@@ -195,6 +205,17 @@ export const addToHighlight = async (req: any, res: any) => {
     if (highlights.length === 0) return res.status(404).json({ error: 'Not found' });
     if (highlights[0].userId !== userId) return res.status(403).json({ error: 'Forbidden' });
 
+    // Get current item count for 50-item limit
+    const countResult: any[] = await prisma.$queryRaw`
+      SELECT COUNT(*)::int as count FROM "StoryHighlightItem" WHERE "highlightId" = ${highlightId}
+    `;
+    const currentCount = countResult[0]?.count || 0;
+    const remainingSlots = Math.max(50 - currentCount, 0);
+
+    if (remainingSlots === 0) {
+      return res.status(400).json({ error: 'Highlight is full (max 50 stories)' });
+    }
+
     // Get max position
     const posResult: any[] = await prisma.$queryRaw`
       SELECT COALESCE(MAX(position), 0) as "maxPos" 
@@ -202,32 +223,44 @@ export const addToHighlight = async (req: any, res: any) => {
       WHERE "highlightId" = ${highlightId}
     `;
     let nextPos = (posResult[0]?.maxPos || 0) + 1;
+    let added = 0;
 
-    // Add from story IDs
-    if (storyIds && Array.isArray(storyIds)) {
+    // Add from story IDs (with duplicate check)
+    if (storyIds && Array.isArray(storyIds) && added < remainingSlots) {
+      // Check which are already highlighted anywhere
+      const alreadyHighlighted: any[] = await prisma.$queryRaw`
+        SELECT "storyId" FROM "StoryHighlightItem" 
+        WHERE "storyId" = ANY(${storyIds}::text[])
+      `;
+      const alreadySet = new Set(alreadyHighlighted.map((r: any) => r.storyId));
+
       const stories = await prisma.story.findMany({
-        where: { id: { in: storyIds }, userId },
+        where: { id: { in: storyIds.filter((sid: string) => !alreadySet.has(sid)) }, userId },
         select: { id: true, mediaUrl: true },
       });
       for (const story of stories) {
+        if (added >= remainingSlots) break;
         const itemId = randomUUID();
         await prisma.$executeRaw`
           INSERT INTO "StoryHighlightItem" (id, "highlightId", "storyId", "mediaUrl", position, "createdAt")
           VALUES (${itemId}, ${highlightId}, ${story.id}, ${story.mediaUrl}, ${nextPos}, NOW())
         `;
         nextPos++;
+        added++;
       }
     }
 
     // Add from direct media URLs (for archived stories)
     if (mediaUrls && Array.isArray(mediaUrls)) {
       for (const url of mediaUrls) {
+        if (added >= remainingSlots) break;
         const itemId = randomUUID();
         await prisma.$executeRaw`
           INSERT INTO "StoryHighlightItem" (id, "highlightId", "storyId", "mediaUrl", position, "createdAt")
           VALUES (${itemId}, ${highlightId}, ${null}, ${url}, ${nextPos}, NOW())
         `;
         nextPos++;
+        added++;
       }
     }
 

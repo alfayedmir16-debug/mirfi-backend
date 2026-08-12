@@ -66,10 +66,10 @@ const getCreatorMonetization = async (req, res) => {
                 viewsChange,
             },
             review: {
-                completeGuidelines: true,
-                communityGuidelines: isEligible,
-                copyrightCompliance: true,
-                authenticContent: isEligible,
+                completeGuidelines: followers >= 100, // At least some presence
+                communityGuidelines: isEligible, // Assume compliant if eligible
+                copyrightCompliance: isEligible, // Assume compliant if eligible
+                authenticContent: posts30d >= 3, // At least 3 posts in 30 days
                 verifiedEmail: user?.isVerified || false,
             },
         });

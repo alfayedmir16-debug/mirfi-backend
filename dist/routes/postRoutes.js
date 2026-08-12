@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const postController_1 = require("../controllers/postController");
+const commentController_1 = require("../controllers/commentController");
 const auth_1 = require("../middleware/auth");
 const router = (0, express_1.Router)();
 router.post('/create', auth_1.authenticateJWT, postController_1.createPost);
@@ -12,11 +13,18 @@ router.get('/user/:userId', auth_1.authenticateJWT, postController_1.getUserPost
 router.get('/post/:postId', auth_1.authenticateJWT, postController_1.getPostById);
 router.post('/save', auth_1.authenticateJWT, postController_1.toggleSave);
 router.get('/saved', auth_1.authenticateJWT, postController_1.getSavedPosts);
-router.get('/search', auth_1.authenticateJWT, postController_1.getFeed); // Use getFeed with query params for search
+router.get('/search', auth_1.authenticateJWT, postController_1.getFeed);
 router.post('/comment', auth_1.authenticateJWT, postController_1.addComment);
 router.get('/:postId/comments', auth_1.authenticateJWT, postController_1.getComments);
 router.put('/settings', auth_1.authenticateJWT, postController_1.updatePostSettings);
 router.delete('/:postId', auth_1.authenticateJWT, postController_1.deletePost);
 router.get('/collab/invites', auth_1.authenticateJWT, postController_1.getPendingCollabInvites);
 router.post('/collab/:postId/respond', auth_1.authenticateJWT, postController_1.respondCollab);
+// ─── Enhanced Comment APIs ───
+router.get('/:postId/comments/v2', auth_1.authenticateJWT, commentController_1.getPostComments);
+router.post('/comment/v2', auth_1.authenticateJWT, commentController_1.addCommentV2);
+router.post('/comment/like', auth_1.authenticateJWT, commentController_1.toggleCommentLike);
+router.post('/comment/pin', auth_1.authenticateJWT, commentController_1.togglePinComment);
+router.delete('/comment/:commentId', auth_1.authenticateJWT, commentController_1.deleteComment);
+router.get('/comments/mentions', auth_1.authenticateJWT, commentController_1.searchMentionUsers);
 exports.default = router;

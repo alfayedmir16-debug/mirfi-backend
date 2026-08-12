@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const creatorController_1 = require("../controllers/creatorController");
+const earningsController_1 = require("../controllers/earningsController");
 const growthController_1 = require("../controllers/growthController");
 const monetizationController_1 = require("../controllers/monetizationController");
 const auth_1 = require("../middleware/auth");
@@ -15,4 +16,7 @@ router.get('/content', auth_1.authenticateJWT, creatorController_1.getCreatorCon
 router.get('/growth', auth_1.authenticateJWT, growthController_1.getCreatorGrowth);
 router.get('/monetization', auth_1.authenticateJWT, monetizationController_1.getCreatorMonetization);
 router.get('/achievements', auth_1.authenticateJWT, creatorController_1.getAchievements);
+// Earnings & Withdrawal
+router.get('/earnings', auth_1.authenticateJWT, earningsController_1.getCreatorEarnings);
+router.post('/withdraw', auth_1.authenticateJWT, earningsController_1.createWithdrawal);
 exports.default = router;

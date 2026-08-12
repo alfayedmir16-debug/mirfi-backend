@@ -5,7 +5,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createSupportTicket = void 0;
 const db_1 = __importDefault(require("../config/db"));
-const emailService_1 = require("../services/emailService");
 const createSupportTicket = async (req, res) => {
     const { category, description, images } = req.body;
     if (!category || !description) {
@@ -32,7 +31,7 @@ const createSupportTicket = async (req, res) => {
                 error: 'Daily limit reached. You can only submit 2 support tickets per day.'
             });
         }
-        // 2. Save ticket to database
+        // 2. Save ticket to database — visible in Admin Panel
         await db_1.default.supportTicket.create({
             data: {
                 userId: user.id,
@@ -41,14 +40,7 @@ const createSupportTicket = async (req, res) => {
                 images: images || []
             }
         });
-        // 3. Send email notification
-        await (0, emailService_1.sendSupportTicketEmail)({
-            username: user.username,
-            email: user.email,
-            category,
-            description,
-            images: images || []
-        });
+        // No email — all tickets managed via Admin Panel
         res.status(200).json({ success: true, message: 'Support ticket sent successfully.' });
     }
     catch (error) {

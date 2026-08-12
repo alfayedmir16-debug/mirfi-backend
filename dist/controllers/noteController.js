@@ -66,11 +66,11 @@ const upsertNote = async (req, res) => {
         const userId = req.user?.id;
         if (!userId)
             return res.status(401).json({ error: 'Unauthorized' });
-        const { text, emoji } = req.body;
-        if (!text || text.trim().length === 0) {
-            return res.status(400).json({ error: 'Note text is required' });
+        const { text, emoji, songUrl, songTitle, songArtist, songArtwork } = req.body;
+        if ((!text || text.trim().length === 0) && !songUrl) {
+            return res.status(400).json({ error: 'Note text or song is required' });
         }
-        if (text.length > 60) {
+        if (text && text.length > 60) {
             return res.status(400).json({ error: 'Note text must be 60 characters or less' });
         }
         const expiresAt = new Date();
@@ -79,13 +79,21 @@ const upsertNote = async (req, res) => {
             where: { userId },
             create: {
                 userId,
-                text: text.trim(),
+                text: (text || '').trim(),
                 emoji: emoji || null,
+                songUrl: songUrl || null,
+                songTitle: songTitle || null,
+                songArtist: songArtist || null,
+                songArtwork: songArtwork || null,
                 expiresAt,
             },
             update: {
-                text: text.trim(),
+                text: (text || '').trim(),
                 emoji: emoji || null,
+                songUrl: songUrl || null,
+                songTitle: songTitle || null,
+                songArtist: songArtist || null,
+                songArtwork: songArtwork || null,
                 expiresAt,
             },
         });

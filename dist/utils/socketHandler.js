@@ -39,6 +39,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.isUserVisiblyOnline = exports.isUserOnline = exports.setupSocket = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const db_1 = __importDefault(require("../config/db"));
+const vibeController_1 = require("../controllers/vibeController");
 const onlineUsers = new Map(); // userId → Set<socketId>
 const setupSocket = (io) => {
     io.use((socket, next) => {
@@ -107,19 +108,25 @@ const setupSocket = (io) => {
                         await db_1.default.message.update({ where: { id: message.id }, data: { status: "DELIVERED" } });
                         io.to(`user:${userId}`).emit("message_delivered", { messageId: message.id });
                     }
-                    // Notification + push for offline (skip if messages muted)
+                    // Push notification for offline (skip if messages muted)
+                    // Note: No DB notification for regular messages — they show in chat inbox only
                     try {
                         const roomForMute = await db_1.default.chatRoom.findUnique({ where: { id: data.roomId }, select: { mutedMessages: true } });
                         const isMsgMuted = roomForMute?.mutedMessages?.includes(recipientId);
-                        const msgType = data.type === "post_share" ? "shared a post" : data.type === "reel_share" ? "shared a reel" : data.mediaUrl ? "sent an image" : data.text ? `"${data.text.substring(0, 60)}${data.text.length > 60 ? "..." : ""}"` : "sent a message";
-                        await db_1.default.notification.create({
-                            data: { userId: recipientId, senderId: userId, type: "message", text: msgType },
-                        });
                         if (!isMsgMuted) {
                             const { sendPushNotification } = await Promise.resolve().then(() => __importStar(require("./pushNotifications")));
-                            const sender = await db_1.default.user.findUnique({ where: { id: userId }, select: { username: true } });
+                            const sender = await db_1.default.user.findUnique({ where: { id: userId }, select: { username: true, displayName: true, profilePicture: true } });
                             if (sender) {
-                                sendPushNotification(recipientId, sender.username, msgType, { type: "message", senderId: userId });
+                                const richText = data.mediaUrl ? "📸 Photo" : data.text ? data.text.substring(0, 200) : "sent a message";
+                                // Send data-only push so frontend Notifee can build grouped MessagingStyle notification
+                                sendPushNotification(recipientId, "", "", {
+                                    type: "message",
+                                    senderId: userId,
+                                    senderName: sender.displayName || sender.username,
+                                    senderAvatar: sender.profilePicture || "",
+                                    messageText: richText,
+                                    timestamp: String(Date.now()),
+                                });
                             }
                         }
                     }
@@ -209,6 +216,8 @@ const setupSocket = (io) => {
                     },
                     select: { mutedCalls: true },
                 });
+                // mutedCalls stores userIds of users who muted calls in this room
+                // If the recipient has muted calls, don't ring them (but still send push)
                 const isCallMuted = room?.mutedCalls?.includes(recipientId);
                 if (!isCallMuted) {
                     io.to(`user:${recipientId}`).emit("incoming_call", {
@@ -277,6 +286,11 @@ const setupSocket = (io) => {
                     catch {
                         socket.broadcast.emit("user_offline", { userId });
                     }
+                    // Vibe: if this user fully disconnected while in an active session, end it & refund partner
+                    try {
+                        await (0, vibeController_1.handleVibeDisconnect)(userId, io);
+                    }
+                    catch (_) { }
                 }
             }
         });

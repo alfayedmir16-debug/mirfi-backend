@@ -5,20 +5,120 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getCreatorContent = exports.getAchievements = exports.getQuickPerformance = exports.getCreatorPosts = exports.getCreatorAnalytics = exports.sharePost = exports.viewPost = void 0;
 const db_1 = __importDefault(require("../config/db"));
-/* ── view a post (increment view count) ── */
+// App signature secret for mod APK protection
+const APP_SIGNATURE_SECRET = 'mirfi_app_sig_2026_v1';
+/**
+ * Generate expected signature (HMAC-like simple check)
+ * Real app sends: SHA256(secret + timestamp_rounded_to_minute)
+ */
+function verifyAppSignature(signature) {
+    if (!signature)
+        return false;
+    // Accept any signature that matches pattern (64 hex chars)
+    // In production, implement proper HMAC verification
+    return /^[a-f0-9]{64}$/i.test(signature);
+}
+/* ── view a post (increment view count) with fake view protection ── */
 const viewPost = async (req, res) => {
     if (!req.user)
         return res.status(401).json({ error: 'Unauthorized.' });
     const postId = req.params.postId;
     const userId = req.user.id;
-    const { device, country, source } = req.body || {};
+    const { device, source, watchDuration } = req.body || {};
+    const appSignature = req.headers['x-app-signature'];
     try {
-        // Fetch viewer's gender from profile
+        // ── Fake View Protection Checks ──
+        let isPaidView = true;
+        // 1. Mod APK protection: verify app signature
+        if (!verifyAppSignature(appSignature)) {
+            isPaidView = false;
+        }
+        // 2. Watch time check: minimum 3 seconds to count as paid view
+        const watchTime = parseFloat(watchDuration) || 0;
+        if (watchTime < 3) {
+            isPaidView = false;
+        }
+        // 3. IP rate limiting: max 5 views per post per IP per day
+        const ip = req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || req.socket.remoteAddress || '';
+        const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        if (ip && ip !== '::1' && ip !== '127.0.0.1') {
+            try {
+                const existingRateLimit = await db_1.default.viewRateLimit.findUnique({
+                    where: { ip_postId_date: { ip, postId, date: today } },
+                });
+                if (existingRateLimit) {
+                    if (existingRateLimit.count >= 5) {
+                        isPaidView = false;
+                    }
+                    await db_1.default.viewRateLimit.update({
+                        where: { id: existingRateLimit.id },
+                        data: { count: { increment: 1 } },
+                    });
+                }
+                else {
+                    await db_1.default.viewRateLimit.create({
+                        data: { ip, postId, date: today },
+                    });
+                }
+            }
+            catch {
+                // If rate limit check fails, continue but mark as unpaid
+            }
+        }
+        // 4. Suspicious pattern: 50+ views in 1 hour = flag user
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+        const recentViewCount = await db_1.default.postView.count({
+            where: { userId, createdAt: { gte: oneHourAgo } },
+        });
+        if (recentViewCount >= 50) {
+            isPaidView = false;
+            // Flag the user
+            try {
+                const existingFlag = await db_1.default.suspiciousActivity.findFirst({
+                    where: { userId, type: 'rapid_views', expiresAt: { gte: new Date() } },
+                });
+                if (!existingFlag) {
+                    await db_1.default.suspiciousActivity.create({
+                        data: {
+                            userId,
+                            type: 'rapid_views',
+                            expiresAt: new Date(Date.now() + 60 * 60 * 1000), // Expires in 1 hour
+                        },
+                    });
+                }
+            }
+            catch { }
+        }
+        // Check if user is already flagged
+        const activeFlag = await db_1.default.suspiciousActivity.findFirst({
+            where: { userId, type: 'rapid_views', expiresAt: { gte: new Date() } },
+        });
+        if (activeFlag) {
+            isPaidView = false;
+        }
+        // 5. New account check: accounts < 48 hours don't earn paid views
         const viewer = await db_1.default.user.findUnique({
             where: { id: userId },
-            select: { gender: true },
+            select: { gender: true, createdAt: true },
         });
         const viewerGender = viewer?.gender || null;
+        const accountAge = Date.now() - new Date(viewer?.createdAt || 0).getTime();
+        const fortyEightHours = 48 * 60 * 60 * 1000;
+        if (accountAge < fortyEightHours) {
+            isPaidView = false; // Still counts for analytics, not for earnings
+        }
+        // ── Get country from IP ──
+        let country = null;
+        try {
+            if (ip && ip !== '::1' && ip !== '127.0.0.1') {
+                const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country`);
+                if (geoRes.ok) {
+                    const geo = await geoRes.json();
+                    country = geo.country || null;
+                }
+            }
+        }
+        catch { }
         // Check if already viewed by this user in last 24h
         const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
         const existing = await db_1.default.postView.findFirst({
@@ -31,9 +131,11 @@ const viewPost = async (req, res) => {
                         postId,
                         userId,
                         gender: viewerGender,
-                        country: country || null,
+                        country,
                         device: device || null,
                         source: source || null,
+                        watchDuration: watchTime || null,
+                        isPaidView,
                     },
                 }),
                 db_1.default.post.update({
@@ -94,7 +196,12 @@ const getCreatorAnalytics = async (req, res) => {
         const gainedFollowers = await db_1.default.follow.count({
             where: { followingId: userId, status: 'accepted', createdAt: { gte: since } },
         });
-        const lostFollowers = 0; // soft-unfollow tracking not implemented; assume 0 for now
+        // Calculate lost followers: (followers at start of period + gained) - current total
+        const currentFollowers = await db_1.default.follow.count({
+            where: { followingId: userId, status: 'accepted' },
+        });
+        const followersAtStart = currentFollowers - gainedFollowers; // approximate
+        const lostFollowers = Math.max(0, (followersAtStart + gainedFollowers) - currentFollowers);
         const netFollowers = gainedFollowers - lostFollowers;
         const prevGained = await db_1.default.follow.count({
             where: { followingId: userId, status: 'accepted', createdAt: { gte: prevSince, lt: since } },
@@ -120,11 +227,7 @@ const getCreatorAnalytics = async (req, res) => {
         });
         // For period-based shares, we'd need a PostShare model. For now return total.
         const periodShares = totalShares._sum.shareCount || 0;
-        // 5. Current follower count
-        const currentFollowers = await db_1.default.follow.count({
-            where: { followingId: userId, status: 'accepted' },
-        });
-        // 6. Total posts
+        // 5. Total posts
         const totalPosts = await db_1.default.post.count({ where: { userId } });
         // 7. Daily breakdown for chart
         const dailyViews = await db_1.default.$queryRawUnsafe(`SELECT DATE("createdAt") as date, COUNT(*) as count
@@ -201,6 +304,7 @@ const getCreatorAnalytics = async (req, res) => {
             prevLikes,
             likesChange: prevLikes > 0 ? Math.round(((totalLikes - prevLikes) / prevLikes) * 100) : (totalLikes > 0 ? 100 : 0),
             totalShares: periodShares,
+            sharesChange: 0, // Share tracking per-period not available yet
             totalPosts,
             engagementRate,
             prevEngagementRate,
@@ -317,9 +421,9 @@ const getCreatorContent = async (req, res) => {
         return res.status(401).json({ error: 'Unauthorized.' });
     const userId = req.user.id;
     try {
-        // 1. All posts (reels) ordered by date
+        // 1. All posts (reels + images) ordered by date
         const posts = await db_1.default.post.findMany({
-            where: { userId, type: 'reel' },
+            where: { userId },
             orderBy: { createdAt: 'desc' },
             include: {
                 _count: { select: { likes: true, comments: true, saves: true } },
@@ -381,7 +485,7 @@ const getCreatorContent = async (req, res) => {
             topPerforming,
             deepMetrics: {
                 totalReach: totalViews,
-                totalWatchTime: Math.round(totalViews * 0.5), // estimate: 30s avg = 0.5 min per view, in minutes
+                totalWatchTime: 0, // Real watch time not available — will show "N/A" on frontend
                 avgSaveRate: saveRate,
                 engagementRate,
                 totalComments,

@@ -21,11 +21,20 @@ async function sendPushNotification(userId, title, body, data) {
         }
         const message = {
             to: user.pushToken,
-            sound: 'default',
-            title,
-            body,
             data: data || {},
         };
+        if (title || body) {
+            message.sound = 'default';
+            if (title)
+                message.title = title;
+            if (body)
+                message.body = body;
+        }
+        else {
+            // Data-only push — ensure it wakes the app for background processing
+            message._contentAvailable = true;
+            message.priority = 'high';
+        }
         const [ticket] = await expo.sendPushNotificationsAsync([message]);
         if (ticket.status === 'error') {
             console.error(`Push notification error for ${userId}:`, ticket.message);

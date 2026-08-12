@@ -1,14 +1,57 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.confirmAccountDeletion = exports.requestAccountDeletion = exports.googleLogin = exports.resetPassword = exports.forgotPassword = exports.updateProfile = exports.getMe = exports.login = exports.register = void 0;
+exports.confirmAccountDeletion = exports.requestAccountDeletion = exports.googleLogin = exports.resetPassword = exports.forgotPassword = exports.updateProfile = exports.refreshToken = exports.getMe = exports.login = exports.register = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const db_1 = require("../db");
 const emailService_1 = require("../services/emailService");
-const JWT_SECRET = process.env.JWT_SECRET || 'mirfi_super_secret_jwt_token_2026_key_abc123';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET)
+    throw new Error('JWT_SECRET environment variable is required');
+const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET || JWT_SECRET + '_refresh';
+// Helper: Generate access + refresh token pair
+function generateTokenPair(user) {
+    const accessToken = jsonwebtoken_1.default.sign({ id: user.id, username: user.username, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
+    const refreshToken = jsonwebtoken_1.default.sign({ id: user.id, type: 'refresh' }, REFRESH_TOKEN_SECRET, { expiresIn: '365d' } // 1 year — user stays logged in until app delete
+    );
+    return { accessToken, refreshToken };
+}
 const register = async (req, res) => {
     const { username, email, password, displayName } = req.body;
     if (!username || !email || !password) {
@@ -47,10 +90,11 @@ const register = async (req, res) => {
                 profilePicture: `https://api.dicebear.com/7.x/adventurer/svg?seed=${username}`
             }
         });
-        // 4. Generate Token
-        const token = jsonwebtoken_1.default.sign({ id: user.id, username: user.username, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
+        // 4. Generate Token Pair
+        const { accessToken, refreshToken } = generateTokenPair(user);
         res.status(201).json({
-            token,
+            token: accessToken,
+            refreshToken,
             user: {
                 id: user.id,
                 username: user.username,
@@ -88,10 +132,11 @@ const login = async (req, res) => {
         if (!isMatch) {
             return res.status(400).json({ error: 'Invalid username or password.' });
         }
-        // 3. Generate Token
-        const token = jsonwebtoken_1.default.sign({ id: user.id, username: user.username, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
+        // 3. Generate Token Pair
+        const { accessToken, refreshToken } = generateTokenPair(user);
         res.status(200).json({
-            token,
+            token: accessToken,
+            refreshToken,
             user: {
                 id: user.id,
                 username: user.username,
@@ -137,6 +182,7 @@ const getMe = async (req, res) => {
             showGender: user.showGender,
             isPrivate: user.isPrivate,
             isVerified: user.isVerified,
+            hiddenStoryFrom: user.hiddenStoryFrom || [],
             stats: {
                 postsCount: user._count.posts,
                 followersCount: user._count.followers,
@@ -149,6 +195,49 @@ const getMe = async (req, res) => {
     }
 };
 exports.getMe = getMe;
+// ──────────────────────────────────────────────
+// Refresh token — issues new access + refresh tokens using a valid refresh token
+// Does NOT require a valid access token — works even after access token expires
+// ──────────────────────────────────────────────
+const refreshToken = async (req, res) => {
+    const { refreshToken: incomingRefreshToken } = req.body;
+    // Also support the old flow: if user sends via Authorization header (backward compat)
+    const authHeader = req.headers.authorization;
+    const tokenFromHeader = authHeader?.split(' ')[1];
+    // Prefer body refresh token, fall back to trying header token as refresh
+    const tokenToVerify = incomingRefreshToken || tokenFromHeader;
+    if (!tokenToVerify) {
+        return res.status(401).json({ error: 'Refresh token is required.' });
+    }
+    try {
+        // Try to verify as refresh token first
+        let decoded;
+        try {
+            decoded = jsonwebtoken_1.default.verify(tokenToVerify, REFRESH_TOKEN_SECRET);
+        }
+        catch (refreshErr) {
+            // Backward compat: try verifying as old access token (for users who haven't re-logged in yet)
+            try {
+                decoded = jsonwebtoken_1.default.verify(tokenToVerify, JWT_SECRET);
+            }
+            catch {
+                return res.status(403).json({ error: 'Invalid or expired refresh token. Please login again.' });
+            }
+        }
+        // Verify user still exists
+        const user = await db_1.prisma.user.findUnique({ where: { id: decoded.id } });
+        if (!user) {
+            return res.status(401).json({ error: 'User no longer exists.' });
+        }
+        // Issue fresh token pair
+        const { accessToken, refreshToken: newRefreshToken } = generateTokenPair(user);
+        res.json({ token: accessToken, refreshToken: newRefreshToken });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+exports.refreshToken = refreshToken;
 const updateProfile = async (req, res) => {
     if (!req.user) {
         return res.status(401).json({ error: 'Unauthorized.' });
@@ -340,10 +429,11 @@ const googleLogin = async (req, res) => {
                 }
             });
         }
-        // 3. Generate JWT Token
-        const token = jsonwebtoken_1.default.sign({ id: user.id, username: user.username, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+        // 3. Generate JWT Token Pair
+        const { accessToken, refreshToken } = generateTokenPair(user);
         res.status(200).json({
-            token,
+            token: accessToken,
+            refreshToken,
             user: {
                 id: user.id,
                 username: user.username,
@@ -428,6 +518,36 @@ const confirmAccountDeletion = async (req, res) => {
         }
         // Delete user and all related data (sequential approach to avoid transaction issues)
         try {
+            // Delete all user's files from Cloudflare R2
+            try {
+                const { DeleteObjectCommand } = await Promise.resolve().then(() => __importStar(require('@aws-sdk/client-s3')));
+                const { r2Client } = await Promise.resolve().then(() => __importStar(require('../utils/r2')));
+                const publicUrl = process.env.CLOUDFLARE_R2_PUBLIC_URL || '';
+                // Get all posts to delete their media files
+                const userPosts = await db_1.prisma.post.findMany({ where: { userId: user.id }, select: { mediaUrl: true, thumbnailUrl: true } });
+                for (const post of userPosts) {
+                    if (post.mediaUrl && post.mediaUrl.startsWith(publicUrl)) {
+                        const key = post.mediaUrl.replace(publicUrl + '/', '');
+                        await r2Client.send(new DeleteObjectCommand({ Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME, Key: key })).catch(() => { });
+                    }
+                    if (post.thumbnailUrl && post.thumbnailUrl.startsWith(publicUrl)) {
+                        const key = post.thumbnailUrl.replace(publicUrl + '/', '');
+                        await r2Client.send(new DeleteObjectCommand({ Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME, Key: key })).catch(() => { });
+                    }
+                }
+                // Delete all user's sounds and their audio files
+                const userSounds = await db_1.prisma.sound.findMany({ where: { creatorId: user.id }, select: { id: true, audioUrl: true } });
+                for (const sound of userSounds) {
+                    if (sound.audioUrl && sound.audioUrl.startsWith(publicUrl)) {
+                        const key = sound.audioUrl.replace(publicUrl + '/', '');
+                        await r2Client.send(new DeleteObjectCommand({ Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME, Key: key })).catch(() => { });
+                    }
+                }
+                await db_1.prisma.sound.deleteMany({ where: { creatorId: user.id } });
+            }
+            catch (r2Err) {
+                console.warn('R2 cleanup failed (non-critical):', r2Err);
+            }
             // Delete user's posts first
             await db_1.prisma.post.deleteMany({ where: { userId: user.id } });
             await db_1.prisma.like.deleteMany({ where: { userId: user.id } });

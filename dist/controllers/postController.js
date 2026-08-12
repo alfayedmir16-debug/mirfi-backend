@@ -37,7 +37,7 @@ exports.deletePost = exports.getPendingCollabInvites = exports.respondCollab = e
 exports.startPostScheduler = startPostScheduler;
 const db_1 = require("../db");
 const createPost = async (req, res) => {
-    const { type, mediaUrl, thumbnailUrl, caption, category, hideLikes, hideShares, collabUserId, scheduledAt, visibility } = req.body;
+    const { type, mediaUrl, thumbnailUrl, caption, category, hideLikes, hideShares, collabUserId, scheduledAt, visibility, textLayers, audioUrl } = req.body;
     if (!req.user) {
         return res.status(401).json({ error: 'Unauthorized.' });
     }
@@ -46,6 +46,16 @@ const createPost = async (req, res) => {
     }
     try {
         const isScheduled = !!scheduledAt;
+        // Parse textLayers if it's a string
+        let parsedTextLayers = null;
+        if (textLayers) {
+            try {
+                parsedTextLayers = typeof textLayers === 'string' ? JSON.parse(textLayers) : textLayers;
+            }
+            catch {
+                parsedTextLayers = null;
+            }
+        }
         const post = await db_1.prisma.post.create({
             data: {
                 userId: req.user.id,
@@ -61,6 +71,8 @@ const createPost = async (req, res) => {
                 scheduledAt: isScheduled ? new Date(scheduledAt) : null,
                 isScheduled: isScheduled,
                 visibility: visibility || 'public',
+                textLayers: parsedTextLayers,
+                audioUrl: audioUrl || null,
             },
             include: {
                 user: {
@@ -73,6 +85,37 @@ const createPost = async (req, res) => {
                 }
             }
         });
+        // Update textLayers and audioUrl via raw query (in case Prisma client hasn't been regenerated)
+        if (parsedTextLayers || audioUrl) {
+            try {
+                await db_1.prisma.$executeRawUnsafe(`UPDATE "Post" SET "textLayers" = $1::jsonb, "audioUrl" = $2 WHERE "id" = $3`, parsedTextLayers ? JSON.stringify(parsedTextLayers) : null, audioUrl || null, post.id);
+            }
+            catch (rawErr) {
+                console.log('Raw update for textLayers/audioUrl skipped (columns may not exist yet):', rawErr);
+            }
+        }
+        // Auto-extract sound for reels (TikTok-style original sounds)
+        if (type === 'reel' && mediaUrl) {
+            try {
+                const creator = await db_1.prisma.user.findUnique({ where: { id: req.user.id }, select: { username: true } });
+                const soundTitle = caption && caption.trim() ? caption.trim().substring(0, 50) : `Original Sound - @${creator?.username || 'user'}`;
+                await db_1.prisma.sound.create({
+                    data: {
+                        title: soundTitle,
+                        audioUrl: mediaUrl,
+                        creatorId: req.user.id,
+                        postId: post.id,
+                        useCount: 1,
+                    },
+                });
+                // Link sound to post
+                const sound = await db_1.prisma.sound.findFirst({ where: { postId: post.id } });
+                if (sound) {
+                    await db_1.prisma.post.update({ where: { id: post.id }, data: { soundId: sound.id } });
+                }
+            }
+            catch { }
+        }
         // Notify collab invitee
         if (collabUserId) {
             try {
@@ -139,36 +182,32 @@ const getReels = async (req, res) => {
     const { limit = '5', cursor } = req.query;
     try {
         const take = parseInt(limit);
-        const blocks = await db_1.prisma.block.findMany({
-            where: { OR: [{ blockerId: req.user.id }, { blockedId: req.user.id }] },
-            select: { blockerId: true, blockedId: true },
-        });
-        const blockedIds = blocks.map(b => b.blockerId === req.user.id ? b.blockedId : b.blockerId);
-        const reels = await db_1.prisma.post.findMany({
-            where: { type: 'reel', userId: { not: req.user.id, notIn: blockedIds }, isScheduled: false, visibility: { in: ['public', 'close_friends'] } },
-            take: take * 2,
-            ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-            orderBy: { createdAt: 'desc' },
-            include: {
-                user: { select: { id: true, username: true, displayName: true, profilePicture: true, isVerified: true, closeFriends: true } },
-                collabUser: { select: { id: true, username: true, displayName: true, profilePicture: true } },
-                likes: { select: { userId: true } },
-                comments: { include: { user: { select: { username: true, profilePicture: true } } } }
-            }
-        });
-        const filteredReels = reels.filter((r) => {
-            if (r.visibility === 'close_friends') {
-                return r.user.closeFriends?.includes(req.user.id);
-            }
-            return true;
-        }).slice(0, take);
-        const nextCursor = filteredReels.length === take ? filteredReels[filteredReels.length - 1].id : null;
+        const userId = req.user.id;
+        // Use recommendation algorithm
+        const { getRecommendedReels, getColdStartReels } = await Promise.resolve().then(() => __importStar(require('../services/reelsAlgorithm')));
+        // Check if user has any interaction history (for cold start detection)
+        const userLikeCount = await db_1.prisma.like.count({ where: { userId } });
+        const userViewCount = await db_1.prisma.postView.count({ where: { userId } });
+        let result;
+        if (userLikeCount < 3 && userViewCount < 10) {
+            // Cold start — new user with no history
+            result = await getColdStartReels(userId, take);
+        }
+        else {
+            // Full algorithm
+            result = await getRecommendedReels({
+                userId,
+                limit: take,
+                cursor: cursor || undefined,
+            });
+        }
         res.status(200).json({
-            reels: filteredReels,
-            nextCursor
+            reels: result.reels,
+            nextCursor: result.nextCursor,
         });
     }
     catch (error) {
+        console.error('getReels algorithm error:', error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -237,6 +276,7 @@ exports.toggleLike = toggleLike;
 const getUserPosts = async (req, res) => {
     const userId = req.params.userId;
     const requesterId = req.user.id;
+    const { limit = '12', cursor } = req.query;
     try {
         // Block check — either direction blocks access
         if (userId !== requesterId) {
@@ -249,8 +289,9 @@ const getUserPosts = async (req, res) => {
                 },
             });
             if (block)
-                return res.status(200).json([]);
+                return res.status(200).json({ posts: [], nextCursor: null });
         }
+        const take = Math.min(parseInt(limit) || 12, 30);
         const isOwner = userId === requesterId;
         const includeBlock = {
             user: { select: { id: true, username: true, displayName: true, profilePicture: true, isVerified: true } },
@@ -258,24 +299,18 @@ const getUserPosts = async (req, res) => {
             likes: { select: { userId: true } },
         };
         const visibilityFilter = isOwner ? {} : { visibility: 'public', isScheduled: false };
-        // own posts
+        // own posts + collab posts combined with pagination
         const ownPosts = await db_1.prisma.post.findMany({
             where: { userId, ...visibilityFilter },
             orderBy: { createdAt: 'desc' },
             include: includeBlock,
+            take: take + 1,
+            ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
         });
-        // collab posts where this user accepted (only public for non-owners)
-        const collabPosts = await db_1.prisma.post.findMany({
-            where: { collabUserId: userId, collabStatus: 'accepted', ...visibilityFilter },
-            orderBy: { createdAt: 'desc' },
-            include: includeBlock,
-        });
-        // merge + dedupe + sort
-        const seen = new Set();
-        const all = [...ownPosts, ...collabPosts].filter(p => { if (seen.has(p.id))
-            return false; seen.add(p.id); return true; });
-        all.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        res.status(200).json(all);
+        const hasMore = ownPosts.length > take;
+        const results = hasMore ? ownPosts.slice(0, take) : ownPosts;
+        const nextCursor = hasMore ? results[results.length - 1].id : null;
+        res.status(200).json({ posts: results, nextCursor });
     }
     catch (error) {
         res.status(500).json({ error: error.message });
@@ -321,10 +356,12 @@ const toggleSave = async (req, res) => {
     }
 };
 exports.toggleSave = toggleSave;
-// Fetch all saved posts for logged-in user
+// Fetch saved posts for logged-in user (paginated)
 const getSavedPosts = async (req, res) => {
     const userId = req.user.id;
+    const { limit = '12', cursor } = req.query;
     try {
+        const take = Math.min(parseInt(limit) || 12, 30);
         const saves = await db_1.prisma.save.findMany({
             where: {
                 userId,
@@ -346,8 +383,16 @@ const getSavedPosts = async (req, res) => {
             orderBy: {
                 createdAt: "desc",
             },
+            take: take + 1, // fetch 1 extra to check if there's more
+            ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
         });
-        res.status(200).json(saves.map(s => s.post));
+        const hasMore = saves.length > take;
+        const results = hasMore ? saves.slice(0, take) : saves;
+        const nextCursor = hasMore ? results[results.length - 1].id : null;
+        res.status(200).json({
+            posts: results.map(s => s.post),
+            nextCursor,
+        });
     }
     catch (error) {
         res.status(500).json({ error: error.message });
@@ -629,6 +674,40 @@ const deletePost = async (req, res) => {
         }
         if (post.userId !== userId) {
             return res.status(403).json({ error: 'Forbidden. You do not own this post.' });
+        }
+        // Delete media file from Cloudflare R2
+        // BUT only if no sound is using this URL (sound should stay)
+        const sound = await db_1.prisma.sound.findFirst({ where: { postId } });
+        if (!sound && post.mediaUrl) {
+            // No sound linked — safe to delete the file
+            try {
+                const { DeleteObjectCommand } = await Promise.resolve().then(() => __importStar(require('@aws-sdk/client-s3')));
+                const { r2Client } = await Promise.resolve().then(() => __importStar(require('../utils/r2')));
+                const publicUrl = process.env.CLOUDFLARE_R2_PUBLIC_URL || '';
+                if (post.mediaUrl.startsWith(publicUrl)) {
+                    const key = post.mediaUrl.replace(publicUrl + '/', '');
+                    await r2Client.send(new DeleteObjectCommand({
+                        Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME,
+                        Key: key,
+                    }));
+                }
+                // Also delete thumbnail if exists
+                if (post.thumbnailUrl && post.thumbnailUrl.startsWith(publicUrl)) {
+                    const thumbKey = post.thumbnailUrl.replace(publicUrl + '/', '');
+                    await r2Client.send(new DeleteObjectCommand({
+                        Bucket: process.env.CLOUDFLARE_R2_BUCKET_NAME,
+                        Key: thumbKey,
+                    }));
+                }
+            }
+            catch (r2Err) {
+                console.warn('R2 delete failed (non-critical):', r2Err);
+            }
+        }
+        // If sound exists, keep the file (others may use the sound)
+        // But unlink the post from sound
+        if (sound) {
+            await db_1.prisma.sound.update({ where: { id: sound.id }, data: { postId: null } }).catch(() => { });
         }
         await db_1.prisma.post.delete({ where: { id: postId } });
         res.status(200).json({ success: true, message: 'Post deleted successfully.' });

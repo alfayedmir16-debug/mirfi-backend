@@ -148,6 +148,7 @@ const getStoryFeed = async (req, res) => {
                         displayName: true,
                         profilePicture: true,
                         closeFriends: true,
+                        hiddenStoryFrom: true,
                     },
                 },
             },
@@ -156,7 +157,12 @@ const getStoryFeed = async (req, res) => {
             },
         });
         // Filter: close_friends stories only visible to author's closeFriends list
+        // Filter: hiddenStoryFrom — if story owner hid stories from current user, exclude
         const visibleStories = activeStories.filter(story => {
+            // Check if story owner has hidden stories from the current viewer
+            if (story.user.hiddenStoryFrom?.includes(userId) && story.userId !== userId) {
+                return false;
+            }
             if (story.audience === 'close_friends') {
                 return story.user.closeFriends?.includes(userId) || story.userId === userId;
             }
@@ -235,10 +241,14 @@ const getUserStories = async (req, res) => {
         }
         const targetUser = await db_1.default.user.findUnique({
             where: { id: userId },
-            select: { id: true, username: true, displayName: true, profilePicture: true, isPrivate: true },
+            select: { id: true, username: true, displayName: true, profilePicture: true, isPrivate: true, hiddenStoryFrom: true },
         });
         if (!targetUser) {
             return res.status(404).json({ error: "User not found" });
+        }
+        // If target user has hidden stories from the requester, return empty
+        if (userId !== requesterId && targetUser.hiddenStoryFrom?.includes(requesterId)) {
+            return res.json({ stories: [] });
         }
         // Block check — either direction means no stories shown
         if (userId !== requesterId) {
@@ -328,6 +338,16 @@ const viewStory = async (req, res) => {
         if (!story) {
             return res.status(404).json({ error: "Story not found" });
         }
+        // Check if story owner has hidden stories from this viewer
+        if (story.userId !== userId) {
+            const storyOwner = await db_1.default.user.findUnique({
+                where: { id: story.userId },
+                select: { hiddenStoryFrom: true },
+            });
+            if (storyOwner?.hiddenStoryFrom?.includes(userId)) {
+                return res.status(403).json({ error: "Story not available" });
+            }
+        }
         if (story.expiresAt < new Date()) {
             return res.status(410).json({ error: "Story has expired" });
         }
@@ -369,7 +389,9 @@ const reactToStory = async (req, res) => {
         if (!story) {
             return res.status(404).json({ error: "Story not found" });
         }
-        if (story.expiresAt < new Date()) {
+        // Allow reactions from highlights even if story expired
+        const fromHighlight = req.body.fromHighlight === true;
+        if (story.expiresAt < new Date() && !fromHighlight) {
             return res.status(410).json({ error: "Story has expired" });
         }
         // One reaction per user per story — check by compound key
@@ -514,9 +536,6 @@ const getStoryActivity = async (req, res) => {
         if (!story) {
             return res.status(404).json({ error: "Story not found" });
         }
-        if (story.expiresAt < new Date()) {
-            return res.status(410).json({ error: "Story has expired" });
-        }
         // Check if user owns this story
         if (story.userId !== userId) {
             return res.status(403).json({ error: "Unauthorized" });
@@ -604,10 +623,33 @@ const deleteStory = async (req, res) => {
         if (story.userId !== userId) {
             return res.status(403).json({ error: "Unauthorized" });
         }
-        // Delete related records first (due to cascade, this might not be needed but safe)
+        // Delete from Cloudflare R2 if the media URL is from R2
+        if (story.mediaUrl && story.mediaUrl.includes('r2.cloudflarestorage.com') || story.mediaUrl?.includes(process.env.CLOUDFLARE_R2_PUBLIC_URL || 'pub-')) {
+            try {
+                const { DeleteObjectCommand } = await Promise.resolve().then(() => __importStar(require('@aws-sdk/client-s3')));
+                const { r2Client } = await Promise.resolve().then(() => __importStar(require('../utils/r2')));
+                // Extract key from URL — format: https://domain/bucket/key or https://pub-xxx.r2.dev/key
+                const url = new URL(story.mediaUrl);
+                const key = url.pathname.startsWith('/') ? url.pathname.slice(1) : url.pathname;
+                // Remove bucket name prefix if present
+                const bucketName = process.env.CLOUDFLARE_R2_BUCKET_NAME || 'mirfi-media';
+                const objectKey = key.startsWith(bucketName + '/') ? key.slice(bucketName.length + 1) : key;
+                await r2Client.send(new DeleteObjectCommand({
+                    Bucket: bucketName,
+                    Key: objectKey,
+                }));
+                console.log(`[R2] Deleted story media: ${objectKey}`);
+            }
+            catch (r2Err) {
+                console.warn('[R2] Failed to delete media (non-blocking):', r2Err);
+                // Don't fail the story deletion if R2 cleanup fails
+            }
+        }
+        // Delete related records first
         await db_1.default.storyView.deleteMany({ where: { storyId } });
         await db_1.default.storyReaction.deleteMany({ where: { storyId } });
         await db_1.default.storyComment.deleteMany({ where: { storyId } });
+        await db_1.default.storyPollVote.deleteMany({ where: { storyId } });
         // Delete the story
         await db_1.default.story.delete({
             where: { id: storyId },

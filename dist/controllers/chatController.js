@@ -150,7 +150,7 @@ exports.initiateRoom = initiateRoom;
 const sendMessage = async (req, res) => {
     try {
         const senderId = req.user.id;
-        const { recipientId, text, type, mediaUrl, postId, storyId, replyToId, audioDuration, scheduledAt } = req.body;
+        const { recipientId, text, type, mediaUrl, postId, storyId, replyToId, audioDuration, scheduledAt, isEncrypted, encryptedData } = req.body;
         if (!recipientId)
             return res.status(400).json({ error: "recipientId is required" });
         // Get or create room with privacy check
@@ -174,6 +174,8 @@ const sendMessage = async (req, res) => {
                 isVanish,
                 scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
                 status: scheduledAt ? "SCHEDULED" : "SENT",
+                isEncrypted: isEncrypted || false,
+                encryptedData: encryptedData || null,
             },
             include: {
                 sender: { select: { id: true, username: true, displayName: true, profilePicture: true } },
@@ -202,21 +204,21 @@ const sendMessage = async (req, res) => {
         }
         catch (_) { }
         // Notification + push
+        // Push notification only — no DB notification for regular messages (they show in chat inbox)
         try {
-            const msgType = type === "post_share" ? "shared a post" : type === "reel_share" ? "shared a reel" : mediaUrl ? "sent an image" : text ? `"${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"` : "sent a message";
-            await db_1.prisma.notification.create({
-                data: { userId: recipientId, senderId, type: "message", text: msgType },
-            });
+            const isEncMsg = isEncrypted || false;
             const { sendPushNotification } = await Promise.resolve().then(() => __importStar(require("../utils/pushNotifications")));
             const sender = await db_1.prisma.user.findUnique({ where: { id: senderId }, select: { username: true, displayName: true, profilePicture: true } });
             if (sender) {
-                const richText = text ? text.substring(0, 200) : mediaUrl ? "📸 Photo" : "sent a message";
-                sendPushNotification(recipientId, sender.displayName || sender.username, richText, {
+                const richText = isEncMsg ? "🔒 Encrypted message" : text ? text.substring(0, 200) : mediaUrl ? "📸 Photo" : "sent a message";
+                // Send a data-only push so the frontend (Notifee) can build the MessagingStyle notification
+                sendPushNotification(recipientId, "", "", {
                     type: "message",
                     senderId,
                     senderName: sender.displayName || sender.username,
-                    senderAvatar: sender.profilePicture,
-                    messageText: text || "",
+                    senderAvatar: sender.profilePicture || "",
+                    messageText: richText,
+                    timestamp: String(Date.now()),
                 });
             }
         }
@@ -236,7 +238,7 @@ const getRooms = async (req, res) => {
     try {
         const userId = req.user.id;
         const rooms = await db_1.prisma.chatRoom.findMany({
-            where: { OR: [{ user1Id: userId }, { user2Id: userId }], NOT: { deletedFor: { has: userId } } },
+            where: { OR: [{ user1Id: userId }, { user2Id: userId }], NOT: { deletedFor: { has: userId } }, isVibe: false },
             include: {
                 user1: { select: { id: true, username: true, displayName: true, profilePicture: true } },
                 user2: { select: { id: true, username: true, displayName: true, profilePicture: true } },
@@ -285,18 +287,46 @@ const getChatHistory = async (req, res) => {
         if (room.user1Id !== userId && room.user2Id !== userId) {
             return res.status(403).json({ error: "Not a participant" });
         }
+        // Pagination params
+        const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+        const before = req.query.before;
         // If user deleted this chat, only show messages after the deletion timestamp
         const deletedAt = (room.deletedFor || []).includes(userId) ? null : room.deletedForAt;
         const afterDate = deletedAt || undefined;
-        const messages = await db_1.prisma.message.findMany({
-            where: { roomId, ...(afterDate ? { createdAt: { gt: afterDate } } : {}) },
-            orderBy: { createdAt: "asc" },
-            include: {
-                sender: { select: { id: true, username: true, displayName: true, profilePicture: true } },
-                reactions: { include: { user: { select: { id: true, username: true } } } },
-                replyTo: { select: { id: true, text: true, type: true, sender: { select: { id: true, username: true, displayName: true } } } },
-            },
-        });
+        let messages;
+        if (before) {
+            // Loading older messages (pagination) — get messages BEFORE the cursor
+            const cursorMsg = await db_1.prisma.message.findUnique({ where: { id: before }, select: { createdAt: true } });
+            messages = await db_1.prisma.message.findMany({
+                where: {
+                    roomId,
+                    ...(afterDate ? { createdAt: { gt: afterDate } } : {}),
+                    ...(cursorMsg ? { createdAt: { lt: cursorMsg.createdAt } } : {}),
+                },
+                orderBy: { createdAt: "desc" },
+                take: limit,
+                include: {
+                    sender: { select: { id: true, username: true, displayName: true, profilePicture: true } },
+                    reactions: { include: { user: { select: { id: true, username: true } } } },
+                    replyTo: { select: { id: true, text: true, type: true, sender: { select: { id: true, username: true, displayName: true } } } },
+                },
+            });
+            messages.reverse(); // Return in ascending order (oldest first)
+        }
+        else {
+            // Initial load — get LATEST N messages
+            messages = await db_1.prisma.message.findMany({
+                where: { roomId, ...(afterDate ? { createdAt: { gt: afterDate } } : {}) },
+                orderBy: { createdAt: "desc" },
+                take: limit,
+                include: {
+                    sender: { select: { id: true, username: true, displayName: true, profilePicture: true } },
+                    reactions: { include: { user: { select: { id: true, username: true } } } },
+                    replyTo: { select: { id: true, text: true, type: true, sender: { select: { id: true, username: true, displayName: true } } } },
+                },
+            });
+            messages.reverse(); // Return in ascending order (oldest first within the batch)
+        }
         // Filter out soft-deleted messages and vanished-seen messages
         const filtered = messages.filter((m) => {
             if ((m.deletedFor || []).includes(userId))
@@ -396,13 +426,30 @@ const unsendMessage = async (req, res) => {
             return res.status(403).json({ error: "Only the sender can unsend" });
         const recipientId = msg.room.user1Id === userId ? msg.room.user2Id : msg.room.user1Id;
         await db_1.prisma.message.delete({ where: { id: messageId } });
-        // Broadcast to both parties
+        // Broadcast to both parties via socket
         try {
             const io = req.app.get("io");
             if (io) {
                 io.to(`user:${userId}`).emit("message_removed", { messageId });
                 io.to(`user:${recipientId}`).emit("message_removed", { messageId });
             }
+        }
+        catch (_) { }
+        // Send silent notification to dismiss the original notification from device
+        try {
+            const { sendPushNotification } = await Promise.resolve().then(() => __importStar(require("../utils/pushNotifications")));
+            sendPushNotification(recipientId, '', '', {
+                type: 'cancel_notification',
+                messageId,
+                silent: true,
+            });
+        }
+        catch (_) { }
+        // Also delete the notification record from DB
+        try {
+            await db_1.prisma.notification.deleteMany({
+                where: { senderId: userId, userId: recipientId, type: 'message' },
+            });
         }
         catch (_) { }
         res.json({ success: true });
@@ -788,7 +835,8 @@ const blockUser = async (req, res) => {
                 ],
             },
         });
-        // Delete any existing chat room between them
+        // Soft-hide the chat room (don't delete messages — preserve for unblock)
+        // Instagram behavior: messages stay, room is hidden, unblock restores access
         const room = await db_1.prisma.chatRoom.findFirst({
             where: {
                 OR: [
@@ -798,8 +846,14 @@ const blockUser = async (req, res) => {
             },
         });
         if (room) {
-            await db_1.prisma.message.deleteMany({ where: { roomId: room.id } });
-            await db_1.prisma.chatRoom.delete({ where: { id: room.id } });
+            // Mark room as "deleted" for both users (soft delete — messages preserved)
+            await db_1.prisma.chatRoom.update({
+                where: { id: room.id },
+                data: {
+                    deletedFor: [blockerId, blockedId],
+                    deletedForAt: new Date(),
+                },
+            });
         }
         res.json(block);
     }
@@ -853,6 +907,24 @@ const unblockUser = async (req, res) => {
         await db_1.prisma.block.deleteMany({
             where: { blockerId, blockedId },
         });
+        // Restore soft-deleted chat room (if it was hidden during block)
+        const room = await db_1.prisma.chatRoom.findFirst({
+            where: {
+                OR: [
+                    { user1Id: blockerId, user2Id: blockedId },
+                    { user1Id: blockedId, user2Id: blockerId },
+                ],
+            },
+        });
+        if (room && (room.deletedFor || []).length > 0) {
+            await db_1.prisma.chatRoom.update({
+                where: { id: room.id },
+                data: {
+                    deletedFor: [],
+                    deletedForAt: null,
+                },
+            });
+        }
         res.json({ success: true });
     }
     catch (e) {

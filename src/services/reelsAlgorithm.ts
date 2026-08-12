@@ -332,10 +332,17 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
   const candidates = await (prisma.post as any).findMany({
     where: {
       type: 'reel',
-      userId: { not: userId, notIn: blockedIds },
       id: { notIn: excludeIds },
       isScheduled: false,
-      visibility: { in: ['public', 'close_friends'] },
+      OR: [
+        // Always include the current user's own reels (any visibility)
+        { userId },
+        // Include others' public/close_friends reels (not blocked)
+        {
+          userId: { notIn: [...blockedIds, userId] },
+          visibility: { in: ['public', 'close_friends'] },
+        },
+      ],
       createdAt: { gte: sevenDaysAgo }, // Only last 7 days for freshness
     },
     take: candidateCount,
@@ -353,8 +360,9 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
     },
   });
 
-  // 5. Filter close_friends visibility
+  // 5. Filter close_friends visibility (own reels always visible)
   const visibleCandidates = candidates.filter((r: any) => {
+    if (r.userId === userId) return true; // Always show own reels
     if (r.visibility === 'close_friends') {
       return r.user.closeFriends?.includes(userId);
     }
@@ -581,9 +589,16 @@ export async function getColdStartReels(userId: string, limit: number) {
   const reels = await (prisma.post as any).findMany({
     where: {
       type: 'reel',
-      userId: { not: userId, notIn: blockedIds },
       isScheduled: false,
-      visibility: 'public',
+      OR: [
+        // Always include the current user's own reels
+        { userId },
+        // Include others' public reels (not blocked)
+        {
+          userId: { notIn: [...blockedIds, userId] },
+          visibility: 'public',
+        },
+      ],
       createdAt: { gte: twoDaysAgo },
     },
     take: limit * 3,

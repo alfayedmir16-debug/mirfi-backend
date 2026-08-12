@@ -1,0 +1,15 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const vibeController_1 = require("../controllers/vibeController");
+const auth_1 = require("../middleware/auth");
+const router = (0, express_1.Router)();
+router.get('/quota', auth_1.authenticateJWT, vibeController_1.getQuota);
+router.post('/find', auth_1.authenticateJWT, vibeController_1.findVibe);
+router.get('/ticket/:id', auth_1.authenticateJWT, vibeController_1.pollTicket);
+router.get('/session/:id', auth_1.authenticateJWT, vibeController_1.getSession);
+router.post('/session/:id/message', auth_1.authenticateJWT, vibeController_1.sendVibeMessage);
+router.post('/session/:id/reveal', auth_1.authenticateJWT, vibeController_1.revealVibe);
+router.post('/session/:id/quit', auth_1.authenticateJWT, vibeController_1.quitVibe);
+router.post('/ad-grant', auth_1.authenticateJWT, vibeController_1.grantAdBonus);
+exports.default = router;

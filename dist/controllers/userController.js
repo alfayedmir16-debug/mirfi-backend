@@ -345,7 +345,31 @@ const searchUsers = async (req, res) => {
             },
             take: 20,
         });
-        res.json(users);
+        // Also search reels by caption/category match
+        const reels = await db_1.prisma.post.findMany({
+            where: {
+                type: 'reel',
+                userId: { notIn: [...blockedIds, loggedInUserId] },
+                isScheduled: false,
+                visibility: 'public',
+                OR: [
+                    { caption: { contains: q, mode: 'insensitive' } },
+                    { category: { contains: q, mode: 'insensitive' } },
+                ],
+            },
+            select: {
+                id: true,
+                mediaUrl: true,
+                thumbnailUrl: true,
+                caption: true,
+                category: true,
+                _count: { select: { likes: true, postViews: true } },
+                user: { select: { id: true, username: true, profilePicture: true } },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 15,
+        });
+        res.json({ users, reels });
     }
     catch (e) {
         console.error("Search Users Error:", e);
@@ -460,6 +484,8 @@ const getNotifications = async (req, res) => {
         const notifications = await db_1.prisma.notification.findMany({
             where: {
                 userId,
+                // Exclude regular chat message notifications — those are in the chat inbox
+                type: { not: "message" },
             },
             orderBy: {
                 createdAt: "desc",
@@ -579,13 +605,13 @@ exports.getUnreadNotificationCount = getUnreadNotificationCount;
 // Update push token
 const updatePushToken = async (req, res) => {
     try {
-        const { pushToken } = req.body;
-        if (!pushToken) {
-            return res.status(400).json({ error: "pushToken is required" });
+        const { pushToken, fcmToken } = req.body;
+        if (!pushToken && !fcmToken) {
+            return res.status(400).json({ error: "pushToken or fcmToken is required" });
         }
         await db_1.prisma.user.update({
             where: { id: req.user.id },
-            data: { pushToken },
+            data: { pushToken: pushToken || fcmToken },
         });
         res.json({ success: true });
     }

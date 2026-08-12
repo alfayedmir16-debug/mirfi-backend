@@ -233,7 +233,26 @@ export const getFollowers = async (req: any, res: any) => {
     });
     const blockedIds = blocks.map(b => b.blockerId === requesterId ? b.blockedId : b.blockerId);
 
-    const followers = await prisma.follow.findMany({
+    const page = parseInt(req.query.page as string, 10);
+    const limit = parseInt(req.query.limit as string, 10) || 20;
+
+    let followers: any[];
+    if (page && page > 0) {
+      const skip = (page - 1) * limit;
+      const [results, total] = await Promise.all([
+        prisma.follow.findMany({
+          where: { followingId: userId, status: "accepted", followerId: { notIn: blockedIds } },
+          include: { follower: { select: { id: true, username: true, displayName: true, profilePicture: true, bio: true } } },
+          skip,
+          take: limit,
+        }),
+        prisma.follow.count({ where: { followingId: userId, status: "accepted", followerId: { notIn: blockedIds } } }),
+      ]);
+      const users = results.map(f => f.follower);
+      return res.json({ users, total, page, hasMore: skip + users.length < total });
+    }
+
+    followers = await prisma.follow.findMany({
       where: {
         followingId: userId,
         status: "accepted",
@@ -264,6 +283,8 @@ export const getFollowing = async (req: any, res: any) => {
   try {
     const { userId } = req.params;
     const requesterId = req.user.id;
+    const page = parseInt(req.query.page as string, 10);
+    const limit = parseInt(req.query.limit as string, 10) || 20;
 
     // Get all blocked IDs (both directions) for the requester
     const blocks = await prisma.block.findMany({
@@ -271,6 +292,21 @@ export const getFollowing = async (req: any, res: any) => {
       select: { blockerId: true, blockedId: true },
     });
     const blockedIds = blocks.map(b => b.blockerId === requesterId ? b.blockedId : b.blockerId);
+
+    if (page && page > 0) {
+      const skip = (page - 1) * limit;
+      const [results, total] = await Promise.all([
+        prisma.follow.findMany({
+          where: { followerId: userId, status: "accepted", followingId: { notIn: blockedIds } },
+          include: { following: { select: { id: true, username: true, displayName: true, profilePicture: true, bio: true } } },
+          skip,
+          take: limit,
+        }),
+        prisma.follow.count({ where: { followerId: userId, status: "accepted", followingId: { notIn: blockedIds } } }),
+      ]);
+      const users = results.map(f => f.following);
+      return res.json({ users, total, page, hasMore: skip + users.length < total });
+    }
 
     const following = await prisma.follow.findMany({
       where: {

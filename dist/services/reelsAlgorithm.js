@@ -275,15 +275,8 @@ async function getRecommendedReels({ userId, limit, cursor, excludeIds = [] }) {
             type: 'reel',
             id: { notIn: excludeIds },
             isScheduled: false,
-            OR: [
-                // Always include the current user's own reels (any visibility)
-                { userId },
-                // Include others' public/close_friends reels (not blocked)
-                {
-                    userId: { notIn: [...blockedIds, userId] },
-                    visibility: { in: ['public', 'close_friends'] },
-                },
-            ],
+            userId: { not: userId, notIn: blockedIds },
+            visibility: { in: ['public', 'close_friends'] },
             createdAt: { gte: sevenDaysAgo }, // Only last 7 days for freshness
         },
         take: candidateCount,
@@ -502,16 +495,8 @@ async function getColdStartReels(userId, limit) {
     const reels = await db_1.prisma.post.findMany({
         where: {
             type: 'reel',
-            isScheduled: false,
-            OR: [
-                // Always include the current user's own reels
-                { userId },
-                // Include others' public reels (not blocked)
-                {
-                    userId: { notIn: [...blockedIds, userId] },
-                    visibility: 'public',
-                },
-            ],
+            userId: { not: userId, notIn: blockedIds },
+            visibility: 'public',
             createdAt: { gte: twoDaysAgo },
         },
         take: limit * 3,

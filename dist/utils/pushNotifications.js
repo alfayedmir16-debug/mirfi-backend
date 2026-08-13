@@ -19,24 +19,39 @@ async function sendPushNotification(userId, title, body, data) {
             console.warn(`Invalid Expo push token for user ${userId}`);
             return;
         }
+        // Determine title & body if empty, fallback to data fields
+        const finalTitle = title || data?.senderName || data?.title || 'MirFi';
+        const finalBody = body || data?.messageText || data?.body || 'New notification';
+        // Map notification type to Android channel ID for high-priority popups
+        let channelId = 'default';
+        const notifType = data?.type || '';
+        if (['message', 'group_message', 'message_reaction'].includes(notifType)) {
+            channelId = 'chat';
+        }
+        else if (['like'].includes(notifType)) {
+            channelId = 'likes';
+        }
+        else if (['comment'].includes(notifType)) {
+            channelId = 'comments';
+        }
+        else if (['follow', 'follow_accepted'].includes(notifType)) {
+            channelId = 'follows';
+        }
+        else if (['story_reaction', 'story_comment', 'story_mention'].includes(notifType)) {
+            channelId = 'stories';
+        }
         const message = {
             to: user.pushToken,
+            title: finalTitle,
+            body: finalBody,
+            sound: 'default',
+            priority: 'high',
+            channelId,
+            _contentAvailable: true,
             data: data || {},
         };
-        if (title || body) {
-            message.sound = 'default';
-            if (title)
-                message.title = title;
-            if (body)
-                message.body = body;
-        }
-        else {
-            // Data-only push — ensure it wakes the app for background processing
-            message._contentAvailable = true;
-            message.priority = 'high';
-        }
         const [ticket] = await expo.sendPushNotificationsAsync([message]);
-        if (ticket.status === 'error') {
+        if (ticket && ticket.status === 'error') {
             console.error(`Push notification error for ${userId}:`, ticket.message);
             if (ticket.details?.error === 'DeviceNotRegistered') {
                 await db_1.default.user.update({

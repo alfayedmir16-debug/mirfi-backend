@@ -3,7 +3,7 @@ import { prisma } from '../db';
 import { AuthRequest } from '../middleware/auth';
 
 export const createPost = async (req: AuthRequest, res: Response) => {
-  const { type, mediaUrl, thumbnailUrl, caption, category, hideLikes, hideShares, collabUserId, scheduledAt, visibility, textLayers, audioUrl } = req.body;
+  const { type, mediaUrl, thumbnailUrl, caption, category, hideLikes, hideShares, collabUserId, scheduledAt, visibility, textLayers, audioUrl, aspectRatio } = req.body;
 
   if (!req.user) {
     return res.status(401).json({ error: 'Unauthorized.' });
@@ -14,6 +14,19 @@ export const createPost = async (req: AuthRequest, res: Response) => {
   }
 
   try {
+    // Limit check: Max 2 posts or reels per day (last 24 hours)
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const postsTodayCount = await prisma.post.count({
+      where: {
+        userId: req.user.id,
+        createdAt: { gte: twentyFourHoursAgo },
+      },
+    });
+
+    if (postsTodayCount >= 2) {
+      return res.status(400).json({ error: 'You can only create up to 2 posts or reels per day. Please try again tomorrow.' });
+    }
+
     const isScheduled = !!scheduledAt;
     // Parse textLayers if it's a string
     let parsedTextLayers = null;
@@ -40,6 +53,7 @@ export const createPost = async (req: AuthRequest, res: Response) => {
         visibility: visibility || 'public',
         textLayers: parsedTextLayers,
         audioUrl: audioUrl || null,
+        aspectRatio: aspectRatio ? parseFloat(aspectRatio.toString()) : null,
       } as any,
       include: {
         user: {
@@ -141,8 +155,9 @@ export const getFeed = async (req: AuthRequest, res: Response) => {
       }
     });
 
-    // Filter close_friends posts: only visible if viewer is in author's closeFriends
+    // Filter close_friends posts: only visible if viewer is in author's closeFriends (or is the author)
     const filteredPosts = posts.filter((p: any) => {
+      if (p.userId === req.user!.id) return true;
       if (p.visibility === 'close_friends') {
         return p.user.closeFriends?.includes(req.user!.id);
       }
@@ -161,38 +176,52 @@ export const getFeed = async (req: AuthRequest, res: Response) => {
 };
 
 export const getReels = async (req: AuthRequest, res: Response) => {
-  const { limit = '5', cursor } = req.query;
+  const { limit = '30', cursor } = req.query;
 
   try {
-    const take = parseInt(limit as string);
-    const userId = req.user!.id;
+    const take = parseInt(limit as string, 10) || 30;
 
-    // Use recommendation algorithm
-    const { getRecommendedReels, getColdStartReels } = await import('../services/reelsAlgorithm');
+    const blocks = await prisma.block.findMany({
+      where: { OR: [{ blockerId: req.user!.id }, { blockedId: req.user!.id }] },
+      select: { blockerId: true, blockedId: true },
+    });
+    const blockedIds = blocks.map(b => b.blockerId === req.user!.id ? b.blockedId : b.blockerId);
 
-    // Check if user has any interaction history (for cold start detection)
-    const userLikeCount = await prisma.like.count({ where: { userId } });
-    const userViewCount = await (prisma as any).postView.count({ where: { userId } });
+    const reels = await (prisma.post as any).findMany({
+      where: {
+        type: { in: ['reel', 'Reel'] },
+        userId: { notIn: blockedIds },
+        isScheduled: false,
+        visibility: { in: ['public', 'close_friends'] },
+      },
+      take: take * 2,
+      ...(cursor ? { skip: 1, cursor: { id: cursor as string } } : {}),
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: { select: { id: true, username: true, displayName: true, profilePicture: true, isVerified: true, closeFriends: true } },
+        collabUser: { select: { id: true, username: true, displayName: true, profilePicture: true } },
+        likes: { select: { userId: true } },
+        saves: { select: { userId: true } },
+        comments: { include: { user: { select: { username: true, profilePicture: true } } } }
+      }
+    });
 
-    let result;
-    if (userLikeCount < 3 && userViewCount < 10) {
-      // Cold start — new user with no history
-      result = await getColdStartReels(userId, take);
-    } else {
-      // Full algorithm
-      result = await getRecommendedReels({
-        userId,
-        limit: take,
-        cursor: cursor as string || undefined,
-      });
-    }
+    // Filter close_friends reels: only show if current user is in that user's close friends list
+    const filteredReels = reels.filter((r: any) => {
+      if (r.userId === req.user!.id) return true;
+      if (r.visibility === 'close_friends') {
+        return r.user.closeFriends?.includes(req.user!.id);
+      }
+      return true;
+    }).slice(0, take);
+
+    const nextCursor = filteredReels.length === take ? filteredReels[filteredReels.length - 1].id : null;
 
     res.status(200).json({
-      reels: result.reels,
-      nextCursor: result.nextCursor,
+      reels: filteredReels,
+      nextCursor
     });
   } catch (error: any) {
-    console.error('getReels algorithm error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -263,7 +292,6 @@ export const toggleLike = async (req: AuthRequest, res: Response) => {
 export const getUserPosts = async (req: AuthRequest, res: Response) => {
   const userId = req.params.userId as string;
   const requesterId = req.user!.id;
-  const { limit = '12', cursor } = req.query;
 
   try {
     // Block check — either direction blocks access
@@ -276,10 +304,9 @@ export const getUserPosts = async (req: AuthRequest, res: Response) => {
           ],
         },
       });
-      if (block) return res.status(200).json({ posts: [], nextCursor: null });
+      if (block) return res.status(200).json([]);
     }
 
-    const take = Math.min(parseInt(limit as string) || 12, 30);
     const isOwner = userId === requesterId;
     const includeBlock = {
       user: { select: { id: true, username: true, displayName: true, profilePicture: true, isVerified: true } },
@@ -289,20 +316,38 @@ export const getUserPosts = async (req: AuthRequest, res: Response) => {
 
     const visibilityFilter = isOwner ? {} : { visibility: 'public', isScheduled: false };
 
-    // own posts + collab posts combined with pagination
+    // own posts
     const ownPosts = await (prisma.post as any).findMany({
       where: { userId, ...visibilityFilter },
       orderBy: { createdAt: 'desc' },
       include: includeBlock,
-      take: take + 1,
-      ...(cursor ? { skip: 1, cursor: { id: cursor as string } } : {}),
     });
+    // collab posts where this user accepted (only public for non-owners)
+    const collabPosts = await (prisma.post as any).findMany({
+      where: { collabUserId: userId, collabStatus: 'accepted', ...visibilityFilter },
+      orderBy: { createdAt: 'desc' },
+      include: includeBlock,
+    });
+    // merge + dedupe + sort
+    const seen = new Set<string>();
+    const all = [...ownPosts, ...collabPosts].filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
+    all.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    const hasMore = ownPosts.length > take;
-    const results = hasMore ? ownPosts.slice(0, take) : ownPosts;
-    const nextCursor = hasMore ? results[results.length - 1].id : null;
+    const page = parseInt(req.query.page as string, 10);
+    const limit = parseInt(req.query.limit as string, 10) || 18;
 
-    res.status(200).json({ posts: results, nextCursor });
+    if (page && page > 0) {
+      const skip = (page - 1) * limit;
+      const paginated = all.slice(skip, skip + limit);
+      return res.status(200).json({
+        posts: paginated,
+        total: all.length,
+        page,
+        hasMore: skip + paginated.length < all.length,
+      });
+    }
+
+    res.status(200).json(all);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -347,47 +392,66 @@ export const toggleSave = async (req: any, res: any) => {
   }
 };
 
-// Fetch saved posts for logged-in user (paginated)
+// Fetch all saved posts for logged-in user with pagination support
 export const getSavedPosts = async (req: any, res: any) => {
   const userId = req.user.id;
-  const { limit = '12', cursor } = req.query;
+  const page = parseInt(req.query.page as string, 10);
+  const limit = parseInt(req.query.limit as string, 10) || 18;
 
   try {
-    const take = Math.min(parseInt(limit as string) || 12, 30);
-
-    const saves = await prisma.save.findMany({
-      where: {
-        userId,
-      },
-      include: {
-        post: {
+    if (page && page > 0) {
+      const skip = (page - 1) * limit;
+      const [saves, total] = await Promise.all([
+        prisma.save.findMany({
+          where: { userId },
           include: {
-            user: {
-              select: {
-                id: true,
-                username: true,
-                displayName: true,
-                profilePicture: true,
+            post: {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    username: true,
+                    displayName: true,
+                    profilePicture: true,
+                  },
+                },
+              },
+            },
+          },
+          orderBy: { createdAt: "desc" },
+          skip,
+          take: limit,
+        }),
+        prisma.save.count({ where: { userId } }),
+      ]);
+      const posts = saves.map(s => s.post).filter(Boolean);
+      return res.status(200).json({
+        posts,
+        total,
+        page,
+        hasMore: skip + saves.length < total,
+      });
+    } else {
+      const saves = await prisma.save.findMany({
+        where: { userId },
+        include: {
+          post: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  username: true,
+                  displayName: true,
+                  profilePicture: true,
+                },
               },
             },
           },
         },
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      take: take + 1, // fetch 1 extra to check if there's more
-      ...(cursor ? { skip: 1, cursor: { id: cursor as string } } : {}),
-    });
-
-    const hasMore = saves.length > take;
-    const results = hasMore ? saves.slice(0, take) : saves;
-    const nextCursor = hasMore ? results[results.length - 1].id : null;
-
-    res.status(200).json({
-      posts: results.map(s => s.post),
-      nextCursor,
-    });
+        orderBy: { createdAt: "desc" },
+      });
+      return res.status(200).json(saves.map(s => s.post).filter(Boolean));
+    }
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -449,29 +513,44 @@ export const addComment = async (req: any, res: any) => {
   }
 };
 
-// Fetch comments for a specific post
+// Fetch comments for a specific post with pagination support
 export const getComments = async (req: any, res: any) => {
   const { postId } = req.params;
+  const page = parseInt(req.query.page as string, 10) || 1;
+  const limit = parseInt(req.query.limit as string, 10) || 20;
+  const skip = (page - 1) * limit;
 
   try {
-    const comments = await prisma.comment.findMany({
-      where: {
-        postId,
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            profilePicture: true,
+    const [comments, total] = await Promise.all([
+      prisma.comment.findMany({
+        where: { postId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              profilePicture: true,
+            },
           },
         },
-      },
-      orderBy: {
-        createdAt: "asc",
-      },
-    });
+        orderBy: { createdAt: "asc" },
+        skip,
+        take: limit,
+      }),
+      prisma.comment.count({ where: { postId } }),
+    ]);
+
+    // Return object if paginated, or raw list if legacy client asks for full list (page <= 0)
+    if (req.query.page || req.query.limit) {
+      return res.status(200).json({
+        comments,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+        hasMore: skip + comments.length < total,
+      });
+    }
 
     res.status(200).json(comments);
   } catch (error: any) {
@@ -497,6 +576,7 @@ export const getPostById = async (req: any, res: any) => {
           select: { id: true, username: true, displayName: true, profilePicture: true },
         },
         likes: { select: { userId: true } },
+        saves: { select: { userId: true } },
         comments: {
           include: {
             user: {
@@ -763,16 +843,17 @@ export function startPostScheduler() {
   setInterval(tick, INTERVAL_MS);
   console.log('[Scheduler] Post scheduler started (1-minute interval)');
 }
-import * as fsExtra from 'fs';
+
+import * as fs from 'fs';
 import * as https from 'https';
 import * as http from 'http';
-import * as pathExtra from 'path';
+import * as path from 'path';
 import * as os from 'os';
 import { exec } from 'child_process';
 
 const downloadFile = (url: string, dest: string): Promise<void> => {
   return new Promise((resolve, reject) => {
-    const file = fsExtra.createWriteStream(dest);
+    const file = fs.createWriteStream(dest);
     const client = url.startsWith('https') ? https : http;
     client.get(url, (response) => {
       if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
@@ -790,7 +871,7 @@ const downloadFile = (url: string, dest: string): Promise<void> => {
         resolve();
       });
     }).on('error', (err) => {
-      fsExtra.unlink(dest, () => {});
+      fs.unlink(dest, () => {});
       reject(err);
     });
   });
@@ -815,12 +896,12 @@ export const downloadPostReel = async (req: any, res: any) => {
 
     // We have an audioUrl, so merge it on the server
     const tempDir = os.tmpdir();
-    const videoExt = pathExtra.extname(new URL(post.mediaUrl).pathname) || '.mp4';
-    const audioExt = pathExtra.extname(new URL(post.audioUrl).pathname) || '.mp3';
+    const videoExt = path.extname(new URL(post.mediaUrl).pathname) || '.mp4';
+    const audioExt = path.extname(new URL(post.audioUrl).pathname) || '.mp3';
 
-    const tempVideoPath = pathExtra.join(tempDir, `video_${postId}_${Date.now()}${videoExt}`);
-    const tempAudioPath = pathExtra.join(tempDir, `audio_${postId}_${Date.now()}${audioExt}`);
-    const outputPath = pathExtra.join(tempDir, `merged_${postId}_${Date.now()}.mp4`);
+    const tempVideoPath = path.join(tempDir, `video_${postId}_${Date.now()}${videoExt}`);
+    const tempAudioPath = path.join(tempDir, `audio_${postId}_${Date.now()}${audioExt}`);
+    const outputPath = path.join(tempDir, `merged_${postId}_${Date.now()}.mp4`);
 
     console.log(`[Download] Starting server-side merge for post ${postId}`);
     console.log(`[Download] Video URL: ${post.mediaUrl}`);
@@ -842,8 +923,8 @@ export const downloadPostReel = async (req: any, res: any) => {
 
     exec(command, (error, stdout, stderr) => {
       // Clean up inputs immediately after execution
-      fsExtra.unlink(tempVideoPath, () => {});
-      fsExtra.unlink(tempAudioPath, () => {});
+      fs.unlink(tempVideoPath, () => {});
+      fs.unlink(tempAudioPath, () => {});
 
       if (error) {
         console.error('[Download] FFmpeg merging failed:', error, stderr);
@@ -855,7 +936,7 @@ export const downloadPostReel = async (req: any, res: any) => {
 
       // Send the merged file to client and delete it after sending
       res.sendFile(outputPath, (sendErr: any) => {
-        fsExtra.unlink(outputPath, () => {});
+        fs.unlink(outputPath, () => {});
         if (sendErr) {
           console.error('[Download] Error sending file to client:', sendErr);
         }

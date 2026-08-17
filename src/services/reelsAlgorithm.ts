@@ -334,7 +334,7 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
       type: 'reel',
       id: { notIn: excludeIds },
       isScheduled: false,
-      userId: { not: userId, notIn: blockedIds },
+      userId: { notIn: blockedIds },
       visibility: { in: ['public', 'close_friends'] },
       createdAt: { gte: sevenDaysAgo }, // Only last 7 days for freshness
     },
@@ -345,6 +345,7 @@ export async function getRecommendedReels({ userId, limit, cursor, excludeIds = 
       user: { select: { id: true, username: true, displayName: true, profilePicture: true, isVerified: true, closeFriends: true } },
       collabUser: { select: { id: true, username: true, displayName: true, profilePicture: true } },
       likes: { select: { userId: true, createdAt: true } },
+      saves: { select: { userId: true } },
       comments: { select: { id: true } },
       postViews: {
         select: { watchDuration: true, userId: true, createdAt: true },
@@ -582,7 +583,7 @@ export async function getColdStartReels(userId: string, limit: number) {
   const reels = await (prisma.post as any).findMany({
     where: {
       type: 'reel',
-      userId: { not: userId, notIn: blockedIds },
+      userId: { notIn: blockedIds },
       visibility: 'public',
       createdAt: { gte: twoDaysAgo },
     },
@@ -592,6 +593,7 @@ export async function getColdStartReels(userId: string, limit: number) {
       user: { select: { id: true, username: true, displayName: true, profilePicture: true, isVerified: true, closeFriends: true } },
       collabUser: { select: { id: true, username: true, displayName: true, profilePicture: true } },
       likes: { select: { userId: true } },
+      saves: { select: { userId: true } },
       comments: { select: { id: true } },
       _count: { select: { likes: true, postViews: true } },
     },

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { addComment, createPost, deletePost, getComments, getFeed, getPendingCollabInvites, getPostById, getReels, getSavedPosts, getUserPosts, respondCollab, toggleLike, toggleSave, updatePostSettings } from '../controllers/postController';
+import { addComment, createPost, deletePost, getComments, getFeed, getPendingCollabInvites, getPostById, getReels, getSavedPosts, getUserPosts, respondCollab, toggleLike, toggleSave, updatePostSettings, downloadPostReel } from '../controllers/postController';
 import { addCommentV2, deleteComment, getPostComments, searchMentionUsers, toggleCommentLike, togglePinComment } from '../controllers/commentController';
 import { authenticateJWT } from '../middleware/auth';
 
@@ -11,6 +11,7 @@ router.get('/reels', authenticateJWT as any, getReels as any);
 router.post('/like', authenticateJWT as any, toggleLike as any);
 router.get('/user/:userId', authenticateJWT as any, getUserPosts as any);
 router.get('/post/:postId', authenticateJWT as any, getPostById as any);
+router.get('/post/:postId/download', downloadPostReel as any);
 router.post('/save', authenticateJWT as any, toggleSave as any);
 router.get('/saved', authenticateJWT as any, getSavedPosts as any);
 router.get('/search', authenticateJWT as any, getFeed as any);

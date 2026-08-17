@@ -11,6 +11,7 @@ router.get('/reels', auth_1.authenticateJWT, postController_1.getReels);
 router.post('/like', auth_1.authenticateJWT, postController_1.toggleLike);
 router.get('/user/:userId', auth_1.authenticateJWT, postController_1.getUserPosts);
 router.get('/post/:postId', auth_1.authenticateJWT, postController_1.getPostById);
+router.get('/post/:postId/download', postController_1.downloadPostReel);
 router.post('/save', auth_1.authenticateJWT, postController_1.toggleSave);
 router.get('/saved', auth_1.authenticateJWT, postController_1.getSavedPosts);
 router.get('/search', auth_1.authenticateJWT, postController_1.getFeed);

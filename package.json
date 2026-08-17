@@ -18,6 +18,7 @@
     "@aws-sdk/client-s3": "^3.1048.0",
     "@aws-sdk/node-http-handler": "^3.370.0",
     "@aws-sdk/s3-request-presigner": "^3.1048.0",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@prisma/client": "^5.16.0",
     "agora-access-token": "^2.0.4",
     "agora-token": "^2.0.5",

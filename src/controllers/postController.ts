@@ -763,3 +763,114 @@ export function startPostScheduler() {
   setInterval(tick, INTERVAL_MS);
   console.log('[Scheduler] Post scheduler started (1-minute interval)');
 }
+import * as fsExtra from 'fs';
+import * as https from 'https';
+import * as http from 'http';
+import * as pathExtra from 'path';
+import * as os from 'os';
+import { exec } from 'child_process';
+
+const downloadFile = (url: string, dest: string): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    const file = fsExtra.createWriteStream(dest);
+    const client = url.startsWith('https') ? https : http;
+    client.get(url, (response) => {
+      if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        // Handle redirect
+        downloadFile(response.headers.location, dest).then(resolve).catch(reject);
+        return;
+      }
+      if (response.statusCode !== 200) {
+        reject(new Error(`Failed to download file: status ${response.statusCode}`));
+        return;
+      }
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        resolve();
+      });
+    }).on('error', (err) => {
+      fsExtra.unlink(dest, () => {});
+      reject(err);
+    });
+  });
+};
+
+export const downloadPostReel = async (req: any, res: any) => {
+  const { postId } = req.params;
+
+  try {
+    const post = await prisma.post.findUnique({
+      where: { id: postId },
+    });
+
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    // If no background music is selected, redirect directly to original mediaUrl
+    if (!post.audioUrl) {
+      return res.redirect(post.mediaUrl);
+    }
+
+    // We have an audioUrl, so merge it on the server
+    const tempDir = os.tmpdir();
+    const videoExt = pathExtra.extname(new URL(post.mediaUrl).pathname) || '.mp4';
+    const audioExt = pathExtra.extname(new URL(post.audioUrl).pathname) || '.mp3';
+
+    const tempVideoPath = pathExtra.join(tempDir, `video_${postId}_${Date.now()}${videoExt}`);
+    const tempAudioPath = pathExtra.join(tempDir, `audio_${postId}_${Date.now()}${audioExt}`);
+    const outputPath = pathExtra.join(tempDir, `merged_${postId}_${Date.now()}.mp4`);
+
+    console.log(`[Download] Starting server-side merge for post ${postId}`);
+    console.log(`[Download] Video URL: ${post.mediaUrl}`);
+    console.log(`[Download] Audio URL: ${post.audioUrl}`);
+
+    // Download both files in parallel
+    await Promise.all([
+      downloadFile(post.mediaUrl, tempVideoPath),
+      downloadFile(post.audioUrl, tempAudioPath),
+    ]);
+
+    const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+    const ffmpegPath = ffmpegInstaller.path;
+
+    // FFmpeg command mapping: strip video original audio and map background music
+    const command = `"${ffmpegPath}" -i "${tempVideoPath}" -i "${tempAudioPath}" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -shortest -y "${outputPath}"`;
+
+    console.log(`[Download] Running FFmpeg command: ${command}`);
+
+    exec(command, (error, stdout, stderr) => {
+      // Clean up inputs immediately after execution
+      fsExtra.unlink(tempVideoPath, () => {});
+      fsExtra.unlink(tempAudioPath, () => {});
+
+      if (error) {
+        console.error('[Download] FFmpeg merging failed:', error, stderr);
+        // Fallback: Redirect to original video so the download doesn't fail completely
+        return res.redirect(post.mediaUrl);
+      }
+
+      console.log('[Download] FFmpeg merge succeeded, streaming file to client');
+
+      // Send the merged file to client and delete it after sending
+      res.sendFile(outputPath, (sendErr: any) => {
+        fsExtra.unlink(outputPath, () => {});
+        if (sendErr) {
+          console.error('[Download] Error sending file to client:', sendErr);
+        }
+      });
+    });
+
+  } catch (err: any) {
+    console.error('[Download] Server-side merge error:', err);
+    // Fallback: Try redirecting to mediaUrl
+    try {
+      const post = await prisma.post.findUnique({ where: { id: postId } });
+      if (post) {
+        return res.redirect(post.mediaUrl);
+      }
+    } catch {}
+    res.status(500).json({ error: err.message || 'Failed to download reel' });
+  }
+};
